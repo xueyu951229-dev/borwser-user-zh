@@ -1,251 +1,249 @@
-# Browser Automation Demo with Claude
+# Computer Use Agent - Session Management Backend
 
-A complete reference implementation for building browser automation with Claude using Playwright. This demo provides a containerized Streamlit interface showcasing how to give Claude the ability to navigate websites, interact with DOM elements, extract content, and fill forms.
-
-> [!TIP]
-> **Looking for production-readiness patterns?** This demo is a deliberately minimal, containerized reference focused on browser-only (DOM) automation in Docker. If you want to see common patterns for making computer- and browser-use agents more reliable and cost-effective — explicit tool definitions, image sizing and pruning, prompt caching, server-side compaction, batched tool calls, a sandboxed shell, and trajectory recording — see the [Computer Use Best Practices](../computer-use-best-practices) quickstart, which runs a full GUI agent (screenshot-and-click plus a Playwright browser tool) natively on macOS and pairs with Anthropic's [computer-use best-practices guide](https://claude.com/blog/best-practices-for-computer-and-browser-use-with-claude).
+A scalable FastAPI backend for managing Claude-powered computer use agent sessions. Replaces the experimental Streamlit interface with production-ready session management, real-time SSE streaming, database persistence, and concurrent multi-session support.
 
 ## Overview
 
-This demo implements a custom browser tool that enables Claude to interact with web browsers. It provides:
+This project wraps the [computer-use-demo](https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo) agent stack with:
 
-- **DOM access**: Read page structure with element references
-- **Navigation control**: Browse URLs and manage browser history
-- **Form manipulation**: Directly set form input values
-- **Text extraction**: Get all text content from pages
-- **Element targeting**: Interact with elements via ref or coordinate parameters
-- **Smart scrolling**: Scroll to specific elements or in specific directions
-- **Page search**: Find and highlight text on pages
-- **Visual capture**: Take screenshots and capture zoomed regions
+- **FastAPI REST API** - Session CRUD, chat, VNC connection management
+- **SSE Real-time Streaming** - Live agent progress: text, tool use, screenshots, errors
+- **MySQL Persistence** - Full chat history and session state storage
+- **Docker Compose** - One-command local development and remote deployment
+- **VNC/noVNC** - Live browser viewport in the frontend via iframe
+- **Concurrent Sessions** - Isolated browser instances per session with lock-protected state
 
-### Advantages Over Coordinate-Based Automation
+## Architecture
 
-- **Reliability**: Element-based targeting via the `ref` parameter works across different screen sizes and layouts, unlike pixel coordinates that break when windows resize
-- **Direct DOM manipulation**: Provides structured visibility into page elements and their properties, enabling precise interactions with dynamic content, hidden elements, and complex web applications
-- **Web-specific actions**: Built-in support for navigation, text extraction, and form completion
+```
+┌──────────────────────────────────────────────────────┐
+│                  Docker Container                      │
+│                                                       │
+│  ┌─────────────────┐  ┌────────────────────────────┐ │
+│  │  Frontend (SPA)  │  │    FastAPI Backend          │ │
+│  │  index.html      │◄─┤    backend/main.py          │ │
+│  │  - Session list  │  │    - REST APIs              │ │
+│  │  - Chat UI       │  │    - SSE streaming          │ │
+│  │  - VNC preview   │  │    - Session management     │ │
+│  └─────────────────┘  └──────────┬─────────────────┘ │
+│                                   │                    │
+│  ┌────────────────────────────────▼─────────────────┐ │
+│  │              Agent Core (browser_use_demo/)        │ │
+│  │  - sampling_loop() → Claude API                   │ │
+│  │  - BrowserTool → Playwright + Chromium            │ │
+│  │  - ToolCollection, MessageBuilder, etc.           │ │
+│  └────────────────────┬─────────────────────────────┘ │
+│                       │                                │
+│  ┌────────────────────▼─────────────────────────────┐ │
+│  │         Virtual Display + VNC                     │ │
+│  │  Xvfb → x11vnc (5900) → noVNC (6080)             │ │
+│  └──────────────────────────────────────────────────┘ │
+│                                                       │
+│  ┌──────────────────────────────────────────────────┐ │
+│  │              MySQL 8.0 (docker-compose)           │ │
+│  │  - sessions table                                 │ │
+│  │  - messages table                                 │ │
+│  └──────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────┘
+```
 
 ## Quick Start
 
 ### Prerequisites
 
-- Docker and Docker Compose installed on your system
-- Anthropic API key
+- Docker and Docker Compose
+- Anthropic API key (or PackyAPI token for Chinese candidates)
 
 ### Setup
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/anthropics/claude-quickstarts.git
-   cd claude-quickstarts/browser-use-demo
-   ```
+```bash
+git clone https://github.com/anthropics/anthropic-quickstarts.git
+cd anthropic-quickstarts/browser-use-demo
 
-2. **Configure environment**:
-   ```bash
-   cp .env.example .env
-   # Edit .env file and add your ANTHROPIC_API_KEY
-   ```
+# Configure environment
+cp .env.example .env
+# Edit .env and add your ANTHROPIC_API_KEY
 
-   The display resolution is set to 1920x1080 (16:9) for optimal coordinate accuracy.
-   - See `.env.example` for more options and coordinate scaling details
+# For Chinese candidates using PackyAPI, also set:
+# ANTHROPIC_BASE_URL=<your-packyapi-proxy-url>
+```
 
-### Running with Docker Compose
+### Run
 
 ```bash
-# For production use:
+# Build and start all services (MySQL + app)
 docker-compose up --build
 
-# For development with file watching (auto-sync changes):
+# Development mode with file watching (auto-reload)
 docker-compose up --build --watch
 ```
 
-### Access the interfaces:
-   - **Main UI**: http://localhost:8080 (Streamlit interface)
-   - **NoVNC Browser View**: http://localhost:6080 (see the browser)
-   - **VNC**: Connect any VNC client to localhost:5900
+### Access
 
-https://github.com/user-attachments/assets/4fb72078-6902-4b63-bcd1-5f2c4cd60582
+| Interface | URL |
+|-----------|-----|
+| **Frontend SPA** | http://localhost:8000 |
+| **API Health Check** | http://localhost:8000/health |
+| **API Docs (Swagger)** | http://localhost:8000/docs |
+| **noVNC Browser View** | http://localhost:6080 |
+| **Direct VNC** | localhost:5900 |
 
-## Usage Examples
+## API Reference
 
-Once the demo is running, try these prompts in the Streamlit interface:
+### Session Management
 
-- "Navigate to news.ycombinator.com and tell me the top 3 stories"
-- "Go to google.com and search for 'Anthropic Claude'"
-- "Visit wikipedia.org and find information about artificial intelligence"
-- "Navigate to github.com and search for 'playwright'"
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/sessions` | Create a new session |
+| `GET` | `/sessions` | List all active sessions |
+| `GET` | `/sessions/{id}` | Get session details |
+| `PATCH` | `/sessions/{id}` | Update session (title, active status) |
+| `DELETE` | `/sessions/{id}` | End session and cleanup resources |
 
-Note that the current Playwright implementation hits CAPTCHAs when searching Google.com. To avoid this, we recommend that you specify the website in the prompt (ie. navigate to Anthropic.com and search for x).
+### Chat & Streaming
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/sessions/{id}/chat` | Send a message to the agent |
+| `GET` | `/sessions/{id}/stream` | SSE stream for real-time agent progress |
+| `GET` | `/sessions/{id}/messages` | Get message history for a session |
+
+### VNC
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/vnc/{id}` | Get VNC/noVNC connection URLs |
+
+### SSE Event Types
+
+The `/sessions/{id}/stream` endpoint emits these events:
+
+| Event | Description |
+|-------|-------------|
+| `text` | Text content from the agent |
+| `tool_use` | Tool invocation (name, input, id) |
+| `tool_result` | Tool execution result |
+| `screenshot` | Base64-encoded PNG screenshot |
+| `error` | Error message |
+| `done` | Processing complete |
+| `status` | Status update (e.g., "Thinking...") |
+| `ping` | Keepalive heartbeat (every 30s) |
+
+### Example: Create Session & Chat
+
+```bash
+# Create a session
+curl -X POST http://localhost:8000/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"title": "My Session", "model": "claude-sonnet-4-5-20250929"}'
+
+# Send a message (returns immediately, progress via SSE)
+curl -X POST http://localhost:8000/sessions/<SESSION_ID>/chat \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Navigate to wikipedia.org and search for Claude AI"}'
+
+# Connect to SSE stream in another terminal
+curl -N http://localhost:8000/sessions/<SESSION_ID>/stream
+```
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | (required) | Anthropic API key |
+| `ANTHROPIC_BASE_URL` | (optional) | Custom API base URL (e.g., PackyAPI proxy) |
+| `MYSQL_HOST` | `localhost` | MySQL hostname |
+| `MYSQL_PORT` | `3306` | MySQL port |
+| `MYSQL_USER` | `browseruse` | MySQL username |
+| `MYSQL_PASSWORD` | `password` | MySQL password |
+| `MYSQL_DB` | `browseruse` | MySQL database name |
+| `VNC_PORT` | `5900` | VNC server port |
+| `NOVNC_PORT` | `6080` | noVNC web proxy port |
+| `API_PORT` | `8000` | FastAPI server port |
+
+## Project Structure
+
+```
+browser-use-demo/
+├── backend/                    # FastAPI backend
+│   ├── main.py                 # App entry point, all API routes
+│   ├── database.py             # Async SQLAlchemy + MySQL connection
+│   ├── models.py               # SQLAlchemy ORM models
+│   ├── schemas.py              # Pydantic request/response schemas
+│   └── requirements.txt
+├── browser_use_demo/           # Core agent library (reused)
+│   ├── loop.py                 # sampling_loop() - Claude API interaction
+│   ├── tools/
+│   │   ├── browser.py          # BrowserTool - Playwright automation
+│   │   ├── collection.py       # ToolCollection registry
+│   │   └── coordinate_scaling.py
+│   ├── message_handler.py      # Response processing & message building
+│   └── browser_tool_utils/     # JavaScript utilities for DOM interaction
+├── frontend/
+│   └── index.html              # Single-page application frontend
+├── image/                      # Docker support scripts
+│   ├── entrypoint.sh           # Container startup
+│   ├── start_all.sh            # Xvfb + window manager + VNC
+│   └── novnc_startup.sh        # noVNC proxy
+├── Dockerfile
+├── docker-compose.yml
+└── .env.example
+```
+
+## Frontend
+
+The frontend (`frontend/index.html`) is a zero-dependency single-page application that demonstrates all backend APIs:
+
+- **Session list** with create/select/delete
+- **Chat interface** with real-time streaming via EventSource (SSE)
+- **Browser preview** panel using noVNC iframe
+- **Settings modal** for API key, model, provider, max tokens, system prompt
+- **Dark theme** with responsive layout
+
+All settings persist in `localStorage`. No build step or npm required.
+
+## Key Files
+
+- **[backend/main.py](backend/main.py)** - API routes, SSE streaming, session lifecycle
+- **[browser_use_demo/loop.py](browser_use_demo/loop.py)** - Core agent loop with Claude API
+- **[browser_use_demo/tools/browser.py](browser_use_demo/tools/browser.py)** - Playwright-based browser automation (22 actions)
+- **[frontend/index.html](frontend/index.html)** - Demo SPA frontend
 
 ## Safety Considerations
 
-Browser automation poses unique risks that are distinct from standard API features or chat interfaces. These risks are heightened when using the tool to interact with the internet. To minimize risks, consider taking precautions such as:
+Browser automation poses unique risks distinct from standard API usage:
 
-1. Run the browser in an isolated virtual machine or container environment with minimal privileges to prevent direct system attacks or accidents.
-2. Avoid giving the model access to sensitive data, such as account login information, to prevent information theft.
-3. Consider an allowlist of domains to reduce exposure to malicious content.
-4. Ask a human to confirm decisions that may result in meaningful real-world consequences as well as any tasks requiring affirmative consent, such as accepting cookies, executing financial transactions, or agreeing to terms of service.
+1. Run the browser in an isolated container environment with minimal privileges
+2. Avoid exposing sensitive data or account credentials
+3. Consider an allowlist of domains to reduce exposure to malicious content
+4. Require human confirmation for actions with real-world consequences
 
-In some circumstances, Claude will follow commands found in content even if it conflicts with the user's instructions. For example, instructions on webpages or contained in images may override user instructions or cause Claude to make mistakes. We suggest taking precautions to isolate Claude from sensitive data and actions to avoid risks related to prompt injection.
-
-Finally, please inform end users of relevant risks and obtain their consent prior to enabling browser automation in your own products.
-
-This demo runs a browser in a containerized environment. While isolated, please note:
-
-- **Don't enter personal credentials or sensitive information** - This is a demonstration tool
-- **Be cautious about the websites you visit** - Some sites may have anti-automation measures
-- **Not for production use** - This demo is for learning and development purposes only
-
-## Implementation Reference
-
-This demo shows how to build browser automation with Claude using Playwright. All browser actions (navigate, click, type, scroll, form_input, etc.) are implemented as methods in [browser.py](browser_use_demo/tools/browser.py) using Playwright's async API.
-
-### Key Files
-
-- **[browser.py](browser_use_demo/tools/browser.py)** - Main tool with all browser actions
-- **[loop.py](browser_use_demo/loop.py)** - Sampling loop for API calls and response handling
-- **[streamlit.py](browser_use_demo/streamlit.py)** - Chat UI
-- **[browser_tool_utils/](browser_use_demo/browser_tool_utils/)** - JavaScript utilities for DOM extraction, element finding, and form manipulation
-
-### Core Patterns
-
-**Element references:** JavaScript utilities generate `ref` identifiers for reliable element targeting across screen sizes (replacing brittle pixel coordinates).
-
-**Tool setup:**
-```python
-browser_tool = BrowserTool()
-
-def to_params(self):
-    return {
-        "name": "browser",
-        "description": BROWSER_TOOL_DESCRIPTION,
-        "input_schema": BROWSER_TOOL_INPUT_SCHEMA,
-    }
-```
-
-### Coordinate Scaling
-
-The browser tools implementation includes automatic coordinate scaling to ensure accurate interactions:
-
-**How it works:**
-- The browser viewport is fixed at 1920x1080 (16:9 aspect ratio)
-- Claude processes screenshots at 1456x819 pixels for 16:9 aspect ratio (see [documentation](https://docs.claude.com/en/docs/build-with-claude/vision#evaluate-image-size))
-- The browser tool automatically scales coordinates from Claude's processed resolution (1456x819) to the actual viewport (1920x1080)
-- This ensures clicks and interactions happen at the correct locations
-
-See `browser_use_demo/tools/coordinate_scaling.py` for the implementation.
-
-This demo uses a custom tool definition with an explicit input schema, giving you full control over the tool interface. The `BROWSER_TOOL_DESCRIPTION` and `BROWSER_TOOL_INPUT_SCHEMA` constants in [browser.py](browser_use_demo/tools/browser.py) provide a complete example you can use as a starting point for your own browser automation tools.
-
-
-### Modifying & Using as a Template
-
-**To modify this demo:**
-1. Edit `browser_use_demo/tools/browser.py` to add features or change behavior
-2. Rebuild the Docker image (volume mount allows live Python code updates)
-
-**To use as a template for your own project:**
-1. Copy [browser.py](browser_use_demo/tools/browser.py) and [browser_tool_utils/](browser_use_demo/browser_tool_utils/)
-2. Adapt [loop.py](browser_use_demo/loop.py) for your API integration
-3. Build your UI or use [streamlit.py](browser_use_demo/streamlit.py) as a starting point
-
-## Architecture
-
-```
-┌──────────────────────────────────┐
-│     Docker Container              │
-│                                   │
-│  ┌─────────────────────────────┐ │
-│  │   Streamlit Interface       │ │  ← User interacts here
-│  └──────────┬──────────────────┘ │
-│             │                     │
-│  ┌──────────▼──────────────────┐ │
-│  │  Claude API + Browser Tool  │ │  ← Claude controls browser
-│  └──────────┬──────────────────┘ │
-│             │                     │
-│  ┌──────────▼──────────────────┐ │
-│  │   Playwright + Chromium     │ │  ← Browser automation
-│  └──────────┬──────────────────┘ │
-│             │                     │
-│  ┌──────────▼──────────────────┐ │
-│  │   XVFB Virtual Display      │ │  ← Virtual display
-│  └──────────┬──────────────────┘ │
-│             │                     │
-│  ┌──────────▼──────────────────┐ │
-│  │   VNC/NoVNC Server          │ │  ← Visual access
-│  └─────────────────────────────┘ │
-└──────────────────────────────────┘
-```
-
-## How Browser Automation Differs from Computer Use
-
-This browser automation demo is specifically optimized for web automation with DOM-aware features like element targeting, page reading, and form manipulation. While it shares many capabilities with the [computer use demo](../computer-use-demo), browser automation adds web-specific actions and the ability to target elements by reference instead of just coordinates. Computer use provides general desktop control for any application, while browser automation focuses exclusively on browser-based tasks.
-
-### Actions Unique to Browser Automation
-
-These web-specific actions are not available in computer use:
-
-- **navigate**: Navigate to URL or use "back"/"forward" for history (requires text)
-- **read_page**: Get DOM tree with element refs; use text="interactive" to filter
-- **get_page_text**: Extract all text content from the page
-- **find**: Search for text and highlight matches (requires text)
-- **form_input**: Set form element value directly (requires ref and value)
-- **scroll_to**: Scroll element into view (requires ref)
-- **execute_js**: Run JavaScript code in page context (requires text with JS code)
-
-### Actions Shared with Computer Use
-
-These actions work similarly to their computer use counterparts. The key difference is that browser automation allows targeting by element reference (`ref`) as an alternative to coordinates:
-
-**Mouse Actions** (accept either `ref` or `coordinate`):
-- **left_click**, **right_click**, **middle_click**, **double_click**, **triple_click**
-- **hover**: Move cursor without clicking (for tooltips, dropdowns)
-- **left_click_drag**: Drag from start_coordinate to coordinate
-- **left_mouse_down**, **left_mouse_up**: Fine-grained mouse control
-
-**Keyboard Actions**:
-- **type**: Type text at cursor (requires text)
-- **key**: Press key or combination (requires text)
-- **hold_key**: Hold key for duration (requires text and duration)
-
-**Other**:
-- **screenshot**: Capture current viewport
-- **scroll**: Scroll in direction (requires scroll_direction, scroll_amount, coordinate)
-- **zoom**: Zoomed screenshot of region (requires region: x1, y1, x2, y2)
-- **wait**: Wait for duration in seconds (requires duration, 0-100)
-
-### Computer Use Actions Not Included
-
-These desktop-level actions from computer use are not in this browser demo:
-
-- **cursor_position**: Get current (x, y) pixel coordinate of cursor
-
-This is less relevant for browser automation since the `ref` parameter provides reliable element-based targeting, replacing the need for cursor tracking. Note that `hover` provides similar functionality to `mouse_move` for triggering hover states.
-
+This demo runs in a containerized environment. While isolated:
+- **Don't enter personal credentials or sensitive information**
+- **Be cautious about the websites you visit** - some sites have anti-automation measures
 
 ## Troubleshooting
 
-**Browser not visible?**
-- Check that port 6080 is accessible
-- Try refreshing the NoVNC page
-- Ensure Docker has sufficient resources allocated
-
 **API errors?**
-- Verify your Anthropic API key is set correctly
-- Check you're using a compatible model (Claude 4.5 models: claude-sonnet-4-5-20250929, claude-opus-4-5-20251101, or claude-haiku-4-5-20251001)
+- Verify `ANTHROPIC_API_KEY` is set correctly in `.env`
+- Check API connectivity from within the container
 
-**Browser actions failing?**
-- Some websites may have anti-automation measures
-- Try simpler websites first to test functionality
-- Check the browser view to see what's happening
+**Browser not visible?**
+- Ensure port 6080 is accessible
+- Refresh the noVNC page
+- Verify Docker has sufficient resources
 
-## Attribution
-
-This software includes components from Microsoft Playwright. See the [NOTICE](NOTICE) file for details.
+**Database connection refused?**
+- Ensure MySQL container is healthy: `docker-compose ps`
+- Check MySQL credentials in `.env` match
 
 ## Credits
 
 Built with:
 - [Anthropic Claude API](https://www.anthropic.com)
+- [FastAPI](https://fastapi.tiangolo.com)
 - [Playwright](https://playwright.dev)
-- [Streamlit](https://streamlit.io)
 - [NoVNC](https://novnc.com)
+- [MySQL](https://www.mysql.com)

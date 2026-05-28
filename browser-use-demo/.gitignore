@@ -26,6 +26,7 @@ wheels/
 # IDE
 .vscode/
 .idea/
+.trae/
 *.swp
 *.swo
 *~
@@ -41,6 +42,9 @@ Thumbs.db
 # Environment
 .env
 .anthropic/
+
+# Database
+*.db
 
 # Test
 .pytest_cache/

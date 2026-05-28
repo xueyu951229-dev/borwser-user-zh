@@ -103,6 +103,8 @@ RUN python -m playwright install chromium && \
 # Setup desktop environment & app
 COPY --chown=$USERNAME:$USERNAME image/ $HOME
 COPY --chown=$USERNAME:$USERNAME browser_use_demo/ $HOME/browser_use_demo/
+COPY --chown=$USERNAME:$USERNAME backend/ $HOME/backend/
+COPY --chown=$USERNAME:$USERNAME frontend/ $HOME/frontend/
 
 # Display configuration - hardcoded values
 ENV DISPLAY_NUM=1
