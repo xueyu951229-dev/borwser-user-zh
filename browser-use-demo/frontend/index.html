@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Computer Use Agent - Browser Automation</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0f1117;
+  color: #e1e4e8;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header */
+.header {
+  background: #1c1f26;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #2d3239;
+}
+.header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #f0f6fc;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.header h1 .icon { font-size: 22px; }
+.header-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+/* Buttons */
+.btn {
+  padding: 8px 16px;
+  border: 1px solid #3a3f47;
+  background: #21262d;
+  color: #c9d1d9;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+.btn:hover { background: #30363d; border-color: #515961; }
+.btn-primary {
+  background: #238636;
+  border-color: #2ea043;
+  color: #fff;
+}
+.btn-primary:hover { background: #2ea043; }
+.btn-danger { background: #da3633; border-color: #f85149; color: #fff; }
+.btn-danger:hover { background: #f85149; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Layout */
+.main-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Sidebar - Session List */
+.sidebar {
+  width: 280px;
+  background: #161b22;
+  border-right: 1px solid #2d3239;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid #2d3239;
+}
+.sidebar-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+.session-item {
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: all 0.15s;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+.session-item:hover { background: #21262d; }
+.session-item.active { background: #1f6feb22; border: 1px solid #1f6feb; }
+.session-item .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item .time { font-size: 11px; color: #8b949e; margin-left: 8px; flex-shrink: 0; }
+
+/* Chat Area */
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.message {
+  display: flex;
+  gap: 10px;
+  max-width: 85%;
+}
+.message.user { align-self: flex-end; flex-direction: row-reverse; }
+.message.assistant, .message.tool { align-self: flex-start; }
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.message.user .avatar { background: #1f6feb; }
+.message.assistant .avatar { background: #6e40c9; }
+.message.tool .avatar { background: #238636; }
+.bubble {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.message.user .bubble { background: #1f6feb; }
+.message.assistant .bubble { background: #21262d; border: 1px solid #30363d; }
+.message.tool .bubble { background: #1a2332; border: 1px solid #23863644; font-size: 12px; }
+.bubble pre {
+  background: #0d1117;
+  padding: 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.bubble img {
+  max-width: 100%;
+  border-radius: 6px;
+  margin-top: 8px;
+  border: 1px solid #30363d;
+}
+.bubble .tool-name {
+  font-weight: 600;
+  color: #7ee787;
+  margin-bottom: 4px;
+}
+
+/* Input Area */
+.input-area {
+  padding: 16px 20px;
+  border-top: 1px solid #2d3239;
+  background: #1c1f26;
+}
+.input-container {
+  display: flex;
+  gap: 10px;
+}
+#messageInput {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid #3a3f47;
+  background: #0d1117;
+  color: #c9d1d9;
+  border-radius: 8px;
+  font-size: 14px;
+  resize: none;
+  min-height: 42px;
+  max-height: 120px;
+  font-family: inherit;
+}
+#messageInput:focus {
+  outline: none;
+  border-color: #1f6feb;
+  box-shadow: 0 0 0 2px #1f6feb44;
+}
+#messageInput::placeholder { color: #484f58; }
+
+/* Browser Preview Panel */
+.preview-panel {
+  width: 400px;
+  background: #161b22;
+  border-left: 1px solid #2d3239;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.preview-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid #2d3239;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.preview-header h3 { font-size: 14px; font-weight: 600; }
+.preview-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.preview-container iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  transform: scale(0.4);
+  transform-origin: 0 0;
+  width: 250%;
+  height: 250%;
+}
+.preview-placeholder {
+  text-align: center;
+  color: #484f58;
+  padding: 40px;
+}
+.preview-placeholder .icon { font-size: 48px; margin-bottom: 12px; }
+
+/* Status Indicator */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+.status-dot.connected { background: #3fb950; }
+.status-dot.disconnected { background: #f85149; }
+
+/* Loading dots */
+.loading-dots::after {
+  content: '';
+  animation: dots 1.5s steps(4) infinite;
+}
+@keyframes dots {
+  0% { content: ''; }
+  25% { content: '.'; }
+  50% { content: '..'; }
+  75% { content: '...'; }
+  100% { content: ''; }
+}
+
+/* Settings Modal */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: #1c1f26;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  padding: 24px;
+  width: 480px;
+  max-width: 90vw;
+}
+.modal h3 { margin-bottom: 16px; font-size: 16px; }
+.modal label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: #8b949e;
+}
+.modal input, .modal select, .modal textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #3a3f47;
+  background: #0d1117;
+  color: #c9d1d9;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.modal textarea { resize: vertical; min-height: 60px; }
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .preview-panel { width: 300px; }
+  .sidebar { width: 220px; }
+}
+@media (max-width: 768px) {
+  .preview-panel { display: none; }
+  .sidebar { width: 200px; }
+}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <h1><span class="icon">🌐</span> Computer Use Agent</h1>
+  <div class="header-actions">
+    <span id="connectionStatus" style="font-size:12px; color:#8b949e; margin-right: 10px;">
+      <span class="status-dot disconnected"></span> Disconnected
+    </span>
+    <button class="btn" onclick="toggleSettings()" title="Settings">⚙️</button>
+    <button class="btn btn-danger" onclick="endSession()" id="endSessionBtn" disabled>End Session</button>
+  </div>
+</div>
+
+<!-- Main Container -->
+<div class="main-container">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <h3>Sessions</h3>
+      <button class="btn btn-primary" onclick="createNewSession()" style="width:100%;">+ New Session</button>
+    </div>
+    <div class="session-list" id="sessionList">
+      <div style="text-align:center; color:#484f58; padding: 20px; font-size:13px;">
+        No sessions yet.<br>Create one to get started.
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat Area -->
+  <div class="chat-area">
+    <div class="messages" id="messages">
+      <div style="text-align:center; color:#484f58; padding: 60px 20px;">
+        <div style="font-size:48px; margin-bottom:12px;">🤖</div>
+        <div style="font-size:16px; font-weight:600; margin-bottom:8px;">Computer Use Agent Ready</div>
+        <div style="font-size:13px;">Create a new session and start controlling the browser.</div>
+      </div>
+    </div>
+    <div class="input-area">
+      <div class="input-container">
+        <textarea id="messageInput" placeholder="Describe what you want the agent to do..." rows="1" disabled></textarea>
+        <button class="btn btn-primary" id="sendBtn" onclick="sendMessage()" disabled>Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Browser Preview -->
+  <div class="preview-panel">
+    <div class="preview-header">
+      <h3>🖥️ Browser Preview</h3>
+      <button class="btn" onclick="togglePreview()" style="font-size:12px;">Toggle</button>
+    </div>
+    <div class="preview-container" id="previewContainer">
+      <div class="preview-placeholder" id="previewPlaceholder">
+        <div class="icon">🖥️</div>
+        <div>Browser preview will appear here<br>once a session is active.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal">
+    <h3>⚙️ Settings</h3>
+    <label>API Key</label>
+    <input type="password" id="apiKeyInput" placeholder="Enter your Anthropic API key">
+    <label>Model</label>
+    <select id="modelSelect">
+      <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+      <option value="claude-opus-4-7">Claude Opus 4.7</option>
+      <option value="claude-opus-4-6">Claude Opus 4.6</option>
+      <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
+    </select>
+    <label>API Provider</label>
+    <select id="providerSelect">
+      <option value="anthropic">Anthropic</option>
+      <option value="bedrock">AWS Bedrock</option>
+      <option value="vertex">GCP Vertex AI</option>
+    </select>
+    <label>Max Tokens</label>
+    <input type="number" id="maxTokensInput" value="8192" min="1" max="32000">
+    <label>System Prompt (optional)</label>
+    <textarea id="systemPromptInput" placeholder="Additional instructions for the agent..."></textarea>
+    <div class="modal-actions">
+      <button class="btn" onclick="toggleSettings()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+const API_BASE = window.location.origin;
+let currentSessionId = null;
+let eventSource = null;
+let currentMessageDiv = null;
+let isProcessing = false;
+
+// ============================================================
+// Session Management
+// ============================================================
+
+async function createNewSession() {
+  const model = document.getElementById('modelSelect').value;
+  const provider = document.getElementById('providerSelect').value;
+  const maxTokens = parseInt(document.getElementById('maxTokensInput').value);
+  const systemPrompt = document.getElementById('systemPromptInput').value;
+
+  try {
+    const response = await fetch(`${API_BASE}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: `Session ${new Date().toLocaleString()}`,
+        model,
+        provider,
+        max_tokens: maxTokens,
+        system_prompt: systemPrompt,
+      }),
+    });
+
+    if (response.ok) {
+      const session = await response.json();
+      await loadSessions();
+      selectSession(session.id);
+    }
+  } catch (error) {
+    console.error('Failed to create session:', error);
+    alert('Failed to create session');
+  }
+}
+
+async function loadSessions() {
+  try {
+    const response = await fetch(`${API_BASE}/sessions`);
+    if (response.ok) {
+      const sessions = await response.json();
+      const sessionList = document.getElementById('sessionList');
+      
+      if (sessions.length === 0) {
+        sessionList.innerHTML = `
+          <div style="text-align:center; color:#484f58; padding: 20px; font-size:13px;">
+            No sessions yet.<br>Create one to get started.
+          </div>
+        `;
+        return;
+      }
+
+      sessionList.innerHTML = sessions.map(session => `
+        <div 
+          class="session-item ${session.id === currentSessionId ? 'active' : ''}"
+          onclick="selectSession('${session.id}')"
+        >
+          <span class="title">${escapeHtml(session.title)}</span>
+          <span class="time">${formatTime(session.updated_at)}</span>
+        </div>
+      `).join('');
+    }
+  } catch (error) {
+    console.error('Failed to load sessions:', error);
+  }
+}
+
+async function selectSession(sessionId) {
+  if (currentSessionId === sessionId) return;
+
+  // Disconnect from previous session
+  disconnectSSE();
+  
+  currentSessionId = sessionId;
+  currentMessageDiv = null;
+  
+  // Update UI
+  document.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
+  document.querySelector(`[onclick="selectSession('${sessionId}')"]`)?.classList.add('active');
+  
+  document.getElementById('messageInput').disabled = false;
+  document.getElementById('sendBtn').disabled = false;
+  document.getElementById('endSessionBtn').disabled = false;
+  
+  // Load messages
+  await loadMessages(sessionId);
+  
+  // Connect SSE
+  connectSSE(sessionId);
+  
+  // Load VNC preview
+  await loadVNCPreview(sessionId);
+}
+
+async function endSession() {
+  if (!currentSessionId) return;
+
+  try {
+    const response = await fetch(`${API_BASE}/sessions/${currentSessionId}`, {
+      method: 'DELETE',
+    });
+
+    if (response.ok) {
+      disconnectSSE();
+      currentSessionId = null;
+      currentMessageDiv = null;
+      
+      document.getElementById('messages').innerHTML = `
+        <div style="text-align:center; color:#484f58; padding: 60px 20px;">
+          <div style="font-size:48px; margin-bottom:12px;">🤖</div>
+          <div style="font-size:16px; font-weight:600; margin-bottom:8px;">Computer Use Agent Ready</div>
+          <div style="font-size:13px;">Create a new session and start controlling the browser.</div>
+        </div>
+      `;
+      
+      document.getElementById('messageInput').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('endSessionBtn').disabled = true;
+      
+      document.getElementById('previewContainer').innerHTML = `
+        <div class="preview-placeholder" id="previewPlaceholder">
+          <div class="icon">🖥️</div>
+          <div>Browser preview will appear here<br>once a session is active.</div>
+        </div>
+      `;
+      
+      await loadSessions();
+    }
+  } catch (error) {
+    console.error('Failed to end session:', error);
+    alert('Failed to end session');
+  }
+}
+
+// ============================================================
+// SSE Connection Management
+// ============================================================
+
+function connectSSE(sessionId) {
+  disconnectSSE();
+  
+  const url = `${API_BASE}/sessions/${sessionId}/stream`;
+  eventSource = new EventSource(url);
+  
+  eventSource.addEventListener('text', (event) => {
+    handleTextEvent(event);
+  });
+  
+  eventSource.addEventListener('tool_use', (event) => {
+    handleToolUseEvent(event);
+  });
+  
+  eventSource.addEventListener('tool_result', (event) => {
+    handleToolResultEvent(event);
+  });
+  
+  eventSource.addEventListener('screenshot', (event) => {
+    handleScreenshotEvent(event);
+  });
+  
+  eventSource.addEventListener('error', (event) => {
+    handleErrorEvent(event);
+  });
+  
+  eventSource.addEventListener('done', (event) => {
+    handleDoneEvent(event);
+  });
+  
+  eventSource.addEventListener('status', (event) => {
+    handleStatusEvent(event);
+  });
+  
+  eventSource.onerror = (error) => {
+    console.error('SSE error:', error);
+    updateConnectionStatus(false);
+  };
+  
+  updateConnectionStatus(true);
+}
+
+function disconnectSSE() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+    updateConnectionStatus(false);
+  }
+}
+
+// ============================================================
+// SSE Event Handlers
+// ============================================================
+
+function handleTextEvent(event) {
+  const data = JSON.parse(event.data);
+  if (!currentMessageDiv) {
+    currentMessageDiv = addMessage('assistant', '');
+  }
+  currentMessageDiv.querySelector('.bubble').textContent += data.content;
+  scrollToBottom();
+}
+
+function handleToolUseEvent(event) {
+  const data = JSON.parse(event.data);
+  const toolContent = `
+    <div class="tool-name">${escapeHtml(data.name)}</div>
+    <pre>${escapeHtml(JSON.stringify(data.input, null, 2))}</pre>
+  `;
+  addMessage('tool', toolContent);
+  scrollToBottom();
+}
+
+function handleToolResultEvent(event) {
+  const data = JSON.parse(event.data);
+  let resultContent = '<div class="tool-name">Tool Result</div>';
+  if (data.output) {
+    resultContent += `<pre>${escapeHtml(data.output)}</pre>`;
+  }
+  if (data.error) {
+    resultContent += `<pre style="color:#f85149;">Error: ${escapeHtml(data.error)}</pre>`;
+  }
+  addMessage('tool', resultContent);
+  scrollToBottom();
+}
+
+function handleScreenshotEvent(event) {
+  const data = JSON.parse(event.data);
+  if (data.base64) {
+    const img = document.createElement('img');
+    img.src = `data:image/png;base64,${data.base64}`;
+    
+    if (currentMessageDiv) {
+      currentMessageDiv.querySelector('.bubble').appendChild(img);
+    } else {
+      const messageDiv = addMessage('assistant', '');
+      messageDiv.querySelector('.bubble').appendChild(img);
+    }
+    scrollToBottom();
+  }
+}
+
+function handleErrorEvent(event) {
+  const data = JSON.parse(event.data);
+  addMessage('assistant', `❌ Error: ${escapeHtml(data.content)}`);
+  scrollToBottom();
+  isProcessing = false;
+  updateSendButton();
+}
+
+function handleDoneEvent(event) {
+  isProcessing = false;
+  updateSendButton();
+  currentMessageDiv = null;
+}
+
+function handleStatusEvent(event) {
+  const data = JSON.parse(event.data);
+  addMessage('assistant', `⏳ ${escapeHtml(data.content)}`);
+  scrollToBottom();
+}
+
+// ============================================================
+// Chat Functions
+// ============================================================
+
+async function sendMessage() {
+  const input = document.getElementById('messageInput');
+  const content = input.value.trim();
+  
+  if (!content || !currentSessionId || isProcessing) return;
+  
+  isProcessing = true;
+  updateSendButton();
+  
+  // Add user message
+  addMessage('user', escapeHtml(content));
+  input.value = '';
+  scrollToBottom();
+  
+  try {
+    const response = await fetch(`${API_BASE}/sessions/${currentSessionId}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      addMessage('assistant', `❌ Error: ${escapeHtml(error.detail || 'Unknown error')}`);
+      isProcessing = false;
+      updateSendButton();
+    }
+  } catch (error) {
+    console.error('Failed to send message:', error);
+    addMessage('assistant', `❌ Failed to send message: ${escapeHtml(error.message)}`);
+    isProcessing = false;
+    updateSendButton();
+  }
+}
+
+async function loadMessages(sessionId) {
+  try {
+    const response = await fetch(`${API_BASE}/sessions/${sessionId}/messages`);
+    if (response.ok) {
+      const messages = await response.json();
+      const messagesContainer = document.getElementById('messages');
+      messagesContainer.innerHTML = '';
+      
+      messages.forEach(msg => {
+        try {
+          const content = JSON.parse(msg.content);
+          let textContent = '';
+          if (Array.isArray(content)) {
+            content.forEach(block => {
+              if (block.type === 'text') {
+                textContent += block.text;
+              } else if (block.type === 'tool_use') {
+                textContent += `\nTool: ${block.name}\n${JSON.stringify(block.input, null, 2)}`;
+              }
+            });
+          }
+          addMessage(msg.role, escapeHtml(textContent));
+        } catch {
+          addMessage(msg.role, escapeHtml(msg.content));
+        }
+      });
+      
+      scrollToBottom();
+    }
+  } catch (error) {
+    console.error('Failed to load messages:', error);
+  }
+}
+
+function addMessage(role, content) {
+  const messagesContainer = document.getElementById('messages');
+  const messageDiv = document.createElement('div');
+  messageDiv.className = `message ${role}`;
+  
+  let avatarEmoji = '🤖';
+  if (role === 'user') avatarEmoji = '👤';
+  else if (role === 'tool') avatarEmoji = '🛠️';
+  
+  messageDiv.innerHTML = `
+    <div class="avatar">${avatarEmoji}</div>
+    <div class="bubble">${content}</div>
+  `;
+  
+  messagesContainer.appendChild(messageDiv);
+  return messageDiv;
+}
+
+// ============================================================
+// Browser Preview
+// ============================================================
+
+async function loadVNCPreview(sessionId) {
+  try {
+    const response = await fetch(`${API_BASE}/vnc/${sessionId}`);
+    if (response.ok) {
+      const vncInfo = await response.json();
+      const previewContainer = document.getElementById('previewContainer');
+      previewContainer.innerHTML = `
+        <iframe src="${vncInfo.novnc_url}" allow="fullscreen"></iframe>
+      `;
+    }
+  } catch (error) {
+    console.error('Failed to load VNC preview:', error);
+  }
+}
+
+function togglePreview() {
+  const previewPanel = document.querySelector('.preview-panel');
+  previewPanel.style.display = previewPanel.style.display === 'none' ? 'flex' : 'none';
+}
+
+// ============================================================
+// UI Helpers
+// ============================================================
+
+function updateConnectionStatus(isConnected) {
+  const statusElement = document.getElementById('connectionStatus');
+  const dot = statusElement.querySelector('.status-dot');
+  
+  if (isConnected) {
+    dot.className = 'status-dot connected';
+    statusElement.innerHTML = '<span class="status-dot connected"></span> Connected';
+  } else {
+    dot.className = 'status-dot disconnected';
+    statusElement.innerHTML = '<span class="status-dot disconnected"></span> Disconnected';
+  }
+}
+
+function updateSendButton() {
+  const sendBtn = document.getElementById('sendBtn');
+  if (isProcessing) {
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Processing...';
+  } else {
+    sendBtn.disabled = !currentSessionId || !document.getElementById('messageInput').value.trim();
+    sendBtn.textContent = 'Send';
+  }
+}
+
+function scrollToBottom() {
+  const messagesContainer = document.getElementById('messages');
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function formatTime(dateString) {
+  const date = new Date(dateString);
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// ============================================================
+// Settings
+// ============================================================
+
+function toggleSettings() {
+  const modal = document.getElementById('settingsModal');
+  modal.classList.toggle('show');
+}
+
+function saveSettings() {
+  // Settings are used when creating new sessions
+  toggleSettings();
+}
+
+// ============================================================
+// Initialization
+// ============================================================
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadSessions();
+  
+  // Load settings from localStorage
+  const savedApiKey = localStorage.getItem('apiKey');
+  const savedModel = localStorage.getItem('model');
+  const savedProvider = localStorage.getItem('provider');
+  const savedMaxTokens = localStorage.getItem('maxTokens');
+  const savedSystemPrompt = localStorage.getItem('systemPrompt');
+  
+  if (savedApiKey) document.getElementById('apiKeyInput').value = savedApiKey;
+  if (savedModel) document.getElementById('modelSelect').value = savedModel;
+  if (savedProvider) document.getElementById('providerSelect').value = savedProvider;
+  if (savedMaxTokens) document.getElementById('maxTokensInput').value = savedMaxTokens;
+  if (savedSystemPrompt) document.getElementById('systemPromptInput').value = savedSystemPrompt;
+  
+  // Save settings to localStorage on change
+  document.getElementById('apiKeyInput').addEventListener('change', (e) => localStorage.setItem('apiKey', e.target.value));
+  document.getElementById('modelSelect').addEventListener('change', (e) => localStorage.setItem('model', e.target.value));
+  document.getElementById('providerSelect').addEventListener('change', (e) => localStorage.setItem('provider', e.target.value));
+  document.getElementById('maxTokensInput').addEventListener('change', (e) => localStorage.setItem('maxTokens', e.target.value));
+  document.getElementById('systemPromptInput').addEventListener('change', (e) => localStorage.setItem('systemPrompt', e.target.value));
+  
+  // Enable send button when input has text
+  document.getElementById('messageInput').addEventListener('input', () => {
+    updateSendButton();
+  });
+  
+  // Send on Enter (Ctrl+Enter for new line)
+  document.getElementById('messageInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+});
+</script>
+</body>
+</html>
