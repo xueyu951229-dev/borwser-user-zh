@@ -64,8 +64,8 @@ A containerized browser automation platform powered by Claude. Each session runs
 ### 1. Clone & Configure
 
 ```bash
-git clone https://github.com/anthropics/anthropic-quickstarts.git
-cd anthropic-quickstarts/browser-use-demo
+git clone https://github.com/xueyu951229-dev/borwser-user-zh.git
+cd browser-use-demo
 
 # Create your .env file
 cp .env.example .env
