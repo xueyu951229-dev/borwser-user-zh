@@ -1,149 +1,191 @@
-# Computer Use Agent - Session Management Backend
+# Computer Use Agent — Browser Automation with Claude
 
-A scalable FastAPI backend for managing Claude-powered computer use agent sessions. Replaces the experimental Streamlit interface with production-ready session management, real-time SSE streaming, database persistence, and concurrent multi-session support.
+A containerized browser automation platform powered by Claude. Each session runs in its own isolated Docker container with a full desktop environment (Xvfb + VNC + Chromium), streamed to your browser in real time via SSE and noVNC.
 
-## Overview
+## Features
 
-This project wraps the [computer-use-demo](https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo) agent stack with:
-
-- **FastAPI REST API** - Session CRUD, chat, VNC connection management
-- **SSE Real-time Streaming** - Live agent progress: text, tool use, screenshots, errors
-- **MySQL Persistence** - Full chat history and session state storage
-- **Docker Compose** - One-command local development and remote deployment
-- **VNC/noVNC** - Live browser viewport in the frontend via iframe
-- **Concurrent Sessions** - Isolated browser instances per session with lock-protected state
+- **Session-per-Container Isolation** — Every session gets its own Docker container with an independent desktop, browser, and VNC stream
+- **Real-time SSE Streaming** — Live agent progress: text, tool calls, screenshots, and results pushed to the frontend
+- **Built-in VNC Viewer** — Watch the agent control the desktop in real time via noVNC (dynamically allocated per session)
+- **MySQL Persistence** — Full chat history with screenshots preserved across restarts
+- **Tool Calling** — Agent actually controls the browser (navigate, click, type, scroll, execute JS, take screenshots, etc.)
+- **Zero-Build Frontend** — Single HTML file SPA, no npm/webpack required
+- **Docker Compose** — One command to start MySQL + API + frontend
+- **Proxy Support** — Works with Anthropic-native proxy services (PackyAPI) for users in China
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                  Docker Container                      │
-│                                                       │
-│  ┌─────────────────┐  ┌────────────────────────────┐ │
-│  │  Frontend (SPA)  │  │    FastAPI Backend          │ │
-│  │  index.html      │◄─┤    backend/main.py          │ │
-│  │  - Session list  │  │    - REST APIs              │ │
-│  │  - Chat UI       │  │    - SSE streaming          │ │
-│  │  - VNC preview   │  │    - Session management     │ │
-│  └─────────────────┘  └──────────┬─────────────────┘ │
-│                                   │                    │
-│  ┌────────────────────────────────▼─────────────────┐ │
-│  │              Agent Core (browser_use_demo/)        │ │
-│  │  - sampling_loop() → Claude API                   │ │
-│  │  - BrowserTool → Playwright + Chromium            │ │
-│  │  - ToolCollection, MessageBuilder, etc.           │ │
-│  └────────────────────┬─────────────────────────────┘ │
-│                       │                                │
-│  ┌────────────────────▼─────────────────────────────┐ │
-│  │         Virtual Display + VNC                     │ │
-│  │  Xvfb → x11vnc (5900) → noVNC (6080)             │ │
-│  └──────────────────────────────────────────────────┘ │
-│                                                       │
-│  ┌──────────────────────────────────────────────────┐ │
-│  │              MySQL 8.0 (docker-compose)           │ │
-│  │  - sessions table                                 │ │
-│  │  - messages table                                 │ │
-│  └──────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                    Docker Host                                │
+│                                                              │
+│  ┌─ browser-use-main ──────────────────────────────────────┐│
+│  │  FastAPI (uvicorn)                                       ││
+│  │  ├─ /sessions          REST CRUD                        ││
+│  │  ├─ /sessions/{id}/chat      Chat endpoint              ││
+│  │  ├─ /sessions/{id}/stream    SSE streaming              ││
+│  │  ├─ /vnc/{id}                VNC connection info        ││
+│  │  └─ /                        Static frontend SPA        ││
+│  └──────────────────────────────────────────────────────────┘│
+│           │                                                  │
+│           │ Docker SDK (ContainerManager)                    │
+│           ▼                                                  │
+│  ┌─ session-<id-1> ───┐  ┌─ session-<id-2> ───┐             │
+│  │ Xvfb + mutter      │  │ Xvfb + mutter      │             │
+│  │ Chromium (CDP)     │  │ Chromium (CDP)     │             │
+│  │ x11vnc + noVNC     │  │ x11vnc + noVNC     │             │
+│  │ :6081              │  │ :6082              │             │
+│  └────────────────────┘  └────────────────────┘             │
+│                                                              │
+│  ┌─ browser-use-mysql ─────────────────────────────────────┐│
+│  │  MySQL 8.0                                              ││
+│  │  ├─ sessions  (session metadata)                        ││
+│  │  └─ messages  (chat history, screenshots)               ││
+│  └──────────────────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────────────────┘
 ```
+
+**How it works:**
+
+1. User creates a **session** → backend spawns an isolated Docker container with a full Linux desktop
+2. User sends a **chat message** → Claude (via Anthropic API or proxy) decides which browser action to take
+3. Agent calls **tools** (navigate, click, type, screenshot, etc.) → Playwright executes them in the session's Chromium
+4. **Real-time feedback** flows back via SSE: tool calls, screenshots, text responses
+5. Every action is visible in the **noVNC pane** — watch the desktop in real time
 
 ## Quick Start
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- Anthropic API key (or PackyAPI token for Chinese candidates)
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
+- Anthropic API key (get one at [console.anthropic.com](https://console.anthropic.com))
+- For users in China: a proxy service like PackyAPI that supports the native Anthropic API format
 
-### Setup
+### 1. Clone & Configure
 
 ```bash
 git clone https://github.com/anthropics/anthropic-quickstarts.git
 cd anthropic-quickstarts/browser-use-demo
 
-# Configure environment
+# Create your .env file
 cp .env.example .env
-# Edit .env and add your ANTHROPIC_API_KEY
-
-# For Chinese candidates using PackyAPI, also set:
-# ANTHROPIC_BASE_URL=<your-packyapi-proxy-url>
 ```
 
-### Run
+Edit `.env` and add your API key:
+
+```env
+ANTHROPIC_API_KEY=sk-your-api-key-here
+
+# For users in China using a proxy:
+ANTHROPIC_BASE_URL=https://your-proxy-url.com
+```
+
+### 2. Build & Start
 
 ```bash
-# Build and start all services (MySQL + app)
-docker-compose up --build
+# Build the Docker image (first time only, ~5 minutes)
+docker compose build
 
-# Development mode with file watching (auto-reload)
-docker-compose up --build --watch
+# Start all services in the background
+docker compose up -d
 ```
 
-### Access
+### 3. Access
 
 | Interface | URL |
 |-----------|-----|
-| **Frontend SPA** | http://localhost:8000 |
-| **API Health Check** | http://localhost:8000/health |
+| **Frontend** | http://localhost:8000 |
 | **API Docs (Swagger)** | http://localhost:8000/docs |
-| **noVNC Browser View** | http://localhost:6080 |
-| **Direct VNC** | localhost:5900 |
+| **Health Check** | http://localhost:8000/health |
 
-## API Reference
+### 4. Create a Session
+
+Open http://localhost:8000 and click **"+ New Session"**. This creates an isolated browser container. The session's noVNC port will be shown (e.g., 6081).
+
+### 5. Start Controlling the Browser
+
+Type a command like:
+
+> "Navigate to example.com and tell me the page title"
+
+The agent will:
+1. Open the browser
+2. Navigate to the URL
+3. Take a screenshot
+4. Read the page
+5. Stream everything back in real time
+
+Click **"🔗 Open VNC"** to watch the desktop live.
+
+## Using the Frontend
+
+The SPA has three panels:
+
+| Panel | Purpose |
+|-------|---------|
+| **Left sidebar** | Session list — create, select, delete sessions |
+| **Center** | Chat interface — send messages, view agent responses and screenshots |
+| **Right** | Browser preview — noVNC iframe showing the live desktop |
+
+**Settings** (⚙️ icon):
+- API key (stored in localStorage, not sent to server)
+- Model selection (Claude Sonnet 4.6, Opus 4.7, etc.)
+- Max tokens
+- Custom system prompt
+
+**Keyboard**: Press `Enter` to send, `Ctrl+Enter` for newline.
+
+## API Overview
 
 ### Session Management
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/sessions` | Create a new session |
-| `GET` | `/sessions` | List all active sessions |
-| `GET` | `/sessions/{id}` | Get session details |
-| `PATCH` | `/sessions/{id}` | Update session (title, active status) |
-| `DELETE` | `/sessions/{id}` | End session and cleanup resources |
-
-### Chat & Streaming
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/sessions/{id}/chat` | Send a message to the agent |
-| `GET` | `/sessions/{id}/stream` | SSE stream for real-time agent progress |
-| `GET` | `/sessions/{id}/messages` | Get message history for a session |
-
-### VNC
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/vnc/{id}` | Get VNC/noVNC connection URLs |
-
-### SSE Event Types
-
-The `/sessions/{id}/stream` endpoint emits these events:
-
-| Event | Description |
-|-------|-------------|
-| `text` | Text content from the agent |
-| `tool_use` | Tool invocation (name, input, id) |
-| `tool_result` | Tool execution result |
-| `screenshot` | Base64-encoded PNG screenshot |
-| `error` | Error message |
-| `done` | Processing complete |
-| `status` | Status update (e.g., "Thinking...") |
-| `ping` | Keepalive heartbeat (every 30s) |
-
-### Example: Create Session & Chat
 
 ```bash
 # Create a session
 curl -X POST http://localhost:8000/sessions \
   -H "Content-Type: application/json" \
-  -d '{"title": "My Session", "model": "claude-sonnet-4-5-20250929"}'
+  -d '{"title": "My Session", "model": "claude-sonnet-4-6", "provider": "anthropic"}'
 
-# Send a message (returns immediately, progress via SSE)
+# List sessions
+curl http://localhost:8000/sessions
+
+# Get session details (includes noVNC port)
+curl http://localhost:8000/sessions/<SESSION_ID>
+```
+
+### Chat & Streaming
+
+Send a message and receive real-time events. Connect to SSE **first**, then send chat:
+
+```bash
+# Terminal 1: Connect to SSE stream
+curl -N http://localhost:8000/sessions/<SESSION_ID>/stream
+
+# Terminal 2: Send a message
 curl -X POST http://localhost:8000/sessions/<SESSION_ID>/chat \
   -H "Content-Type: application/json" \
-  -d '{"content": "Navigate to wikipedia.org and search for Claude AI"}'
+  -d '{"content": "Navigate to wikipedia.org"}'
+```
 
-# Connect to SSE stream in another terminal
-curl -N http://localhost:8000/sessions/<SESSION_ID>/stream
+### SSE Events
+
+| Event | Description |
+|-------|-------------|
+| `connected` | Stream established (session ID) |
+| `status` | Status update ("Thinking...") |
+| `text` | Agent text response (streamed token by token) |
+| `tool_use` | Tool invocation (name, input, id) |
+| `tool_result` | Tool execution result (output/error) |
+| `screenshot` | Base64-encoded JPEG screenshot |
+| `error` | Error message |
+| `done` | Current turn complete (stream stays open for multi-turn) |
+| `ping` | Keepalive heartbeat (every 30s) |
+
+### VNC
+
+```bash
+# Get VNC connection info
+curl http://localhost:8000/vnc/<SESSION_ID>
+# Returns: {"session_id": "...", "novnc_port": 6081, "novnc_url": "http://..."}
 ```
 
 ## Configuration
@@ -152,98 +194,98 @@ curl -N http://localhost:8000/sessions/<SESSION_ID>/stream
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | (required) | Anthropic API key |
-| `ANTHROPIC_BASE_URL` | (optional) | Custom API base URL (e.g., PackyAPI proxy) |
-| `MYSQL_HOST` | `localhost` | MySQL hostname |
-| `MYSQL_PORT` | `3306` | MySQL port |
-| `MYSQL_USER` | `browseruse` | MySQL username |
-| `MYSQL_PASSWORD` | `password` | MySQL password |
-| `MYSQL_DB` | `browseruse` | MySQL database name |
-| `VNC_PORT` | `5900` | VNC server port |
-| `NOVNC_PORT` | `6080` | noVNC web proxy port |
+| `ANTHROPIC_API_KEY` | *(required)* | Anthropic API key |
+| `ANTHROPIC_BASE_URL` | *(empty)* | Proxy base URL (e.g., PackyAPI). Uses native Anthropic protocol for tool calling support |
 | `API_PORT` | `8000` | FastAPI server port |
+| `MYSQL_HOST` | `mysql` | MySQL hostname |
+| `MYSQL_PORT` | `3306` | MySQL port |
+| `MYSQL_USER` | `browseruse` | MySQL user |
+| `MYSQL_PASSWORD` | `password` | MySQL password |
+| `MYSQL_DB` | `browseruse` | Database name |
+| `MYSQL_ROOT_PASSWORD` | `rootpassword` | MySQL root password |
+| `NOVNC_PORT_MIN` | `6081` | Start of per-session noVNC port range |
+| `NOVNC_PORT_MAX` | `6180` | End of per-session noVNC port range |
+| `SESSION_IMAGE` | `browser-use-demo:latest` | Docker image for session containers |
+| `SESSION_MEM_LIMIT` | `2g` | Memory limit per session container |
+| `SESSION_CPU_QUOTA` | `50000` | CPU quota per session (micro-CPUs) |
+
+### Model Selection
+
+The frontend settings panel lets you choose from:
+- `claude-sonnet-4-6` (recommended — best balance of performance and cost)
+- `claude-opus-4-7` (most capable)
+- `claude-haiku-4-5-20251001` (fastest/cheapest)
 
 ## Project Structure
 
 ```
 browser-use-demo/
-├── backend/                    # FastAPI backend
-│   ├── main.py                 # App entry point, all API routes
-│   ├── database.py             # Async SQLAlchemy + MySQL connection
-│   ├── models.py               # SQLAlchemy ORM models
-│   ├── schemas.py              # Pydantic request/response schemas
+├── backend/
+│   ├── main.py                 # FastAPI app, all routes, SSE, session lifecycle
+│   ├── container_manager.py    # Docker SDK: spawn/stop per-session containers
+│   ├── database.py             # Async SQLAlchemy + MySQL + schema migrations
+│   ├── models.py               # SQLAlchemy ORM (Session, Message)
+│   ├── schemas.py              # Pydantic request/response models
+│   ├── tasks.py                # Background cleanup task for stale sessions
 │   └── requirements.txt
-├── browser_use_demo/           # Core agent library (reused)
-│   ├── loop.py                 # sampling_loop() - Claude API interaction
-│   ├── tools/
-│   │   ├── browser.py          # BrowserTool - Playwright automation
-│   │   ├── collection.py       # ToolCollection registry
-│   │   └── coordinate_scaling.py
-│   ├── message_handler.py      # Response processing & message building
-│   └── browser_tool_utils/     # JavaScript utilities for DOM interaction
+├── browser_use_demo/           # Core agent library
+│   ├── loop.py                 # sampling_loop() — Claude API interaction loop
+│   ├── message_handler.py      # Tool execution, response processing, message building
+│   └── tools/
+│       ├── browser.py          # BrowserTool — 22 Playwright actions
+│       └── collection.py       # ToolCollection registry
 ├── frontend/
-│   └── index.html              # Single-page application frontend
-├── image/                      # Docker support scripts
-│   ├── entrypoint.sh           # Container startup
-│   ├── start_all.sh            # Xvfb + window manager + VNC
-│   └── novnc_startup.sh        # noVNC proxy
+│   └── index.html              # Zero-dependency SPA (HTML + CSS + vanilla JS)
+├── image/
+│   ├── session-entrypoint.sh   # Session container startup script
+│   └── *.sh                    # Xvfb, mutter, tint2, x11vnc startup helpers
 ├── Dockerfile
-├── docker-compose.yml
-└── .env.example
+├── docker-compose.yml          # MySQL + main-backend services
+├── .env.example                # Environment variable template
+└── README.md
 ```
 
-## Frontend
+### Key Files
 
-The frontend (`frontend/index.html`) is a zero-dependency single-page application that demonstrates all backend APIs:
+| File | What it does |
+|------|-------------|
+| `backend/main.py` | API routes, SSE streaming, session lifecycle, static file serving |
+| `backend/container_manager.py` | Spawns per-session Docker containers with isolated desktops |
+| `browser_use_demo/loop.py` | Core agent loop: calls Claude API (native Anthropic protocol with proxy support), processes tool calls |
+| `browser_use_demo/tools/browser.py` | BrowserTool: 22 Playwright-based actions (navigate, click, type, screenshot, etc.) |
+| `browser_use_demo/message_handler.py` | Builds messages, executes tools, processes responses |
+| `frontend/index.html` | Complete SPA frontend with SSE, VNC preview, session management |
+| `image/session-entrypoint.sh` | Launches Xvfb → tint2 → mutter → x11vnc → noVNC → Chromium |
 
-- **Session list** with create/select/delete
-- **Chat interface** with real-time streaming via EventSource (SSE)
-- **Browser preview** panel using noVNC iframe
-- **Settings modal** for API key, model, provider, max tokens, system prompt
-- **Dark theme** with responsive layout
+## Stop / Cleanup
 
-All settings persist in `localStorage`. No build step or npm required.
+```bash
+# Stop the main services
+docker compose down
 
-## Key Files
+# Clean up everything (including database volume)
+docker compose down -v
 
-- **[backend/main.py](backend/main.py)** - API routes, SSE streaming, session lifecycle
-- **[browser_use_demo/loop.py](browser_use_demo/loop.py)** - Core agent loop with Claude API
-- **[browser_use_demo/tools/browser.py](browser_use_demo/tools/browser.py)** - Playwright-based browser automation (22 actions)
-- **[frontend/index.html](frontend/index.html)** - Demo SPA frontend
+# Remove session containers (if any left)
+docker rm -f $(docker ps -a --filter "name=session-" -q) 2>/dev/null
+```
 
 ## Safety Considerations
 
-Browser automation poses unique risks distinct from standard API usage:
+Browser automation carries unique risks:
 
-1. Run the browser in an isolated container environment with minimal privileges
-2. Avoid exposing sensitive data or account credentials
-3. Consider an allowlist of domains to reduce exposure to malicious content
-4. Require human confirmation for actions with real-world consequences
-
-This demo runs in a containerized environment. While isolated:
-- **Don't enter personal credentials or sensitive information**
-- **Be cautious about the websites you visit** - some sites have anti-automation measures
-
-## Troubleshooting
-
-**API errors?**
-- Verify `ANTHROPIC_API_KEY` is set correctly in `.env`
-- Check API connectivity from within the container
-
-**Browser not visible?**
-- Ensure port 6080 is accessible
-- Refresh the noVNC page
-- Verify Docker has sufficient resources
-
-**Database connection refused?**
-- Ensure MySQL container is healthy: `docker-compose ps`
-- Check MySQL credentials in `.env` match
+1. **Isolation** — Each session runs in a separate Docker container. Avoid running as root on the host.
+2. **Credentials** — Never enter personal passwords or sensitive information. The agent can see everything on screen.
+3. **Domain restrictions** — Consider using an allowlist of trusted domains in production.
+4. **Human confirmation** — For production use, add a confirmation step before actions with real-world consequences (purchases, deletions, etc.).
+5. **Network** — Session containers share a Docker network. In production, add network policies.
+6. **Bot detection** — Many sites (especially Google) block automated browsers. Respect robots.txt and terms of service.
 
 ## Credits
 
-Built with:
-- [Anthropic Claude API](https://www.anthropic.com)
-- [FastAPI](https://fastapi.tiangolo.com)
-- [Playwright](https://playwright.dev)
-- [NoVNC](https://novnc.com)
-- [MySQL](https://www.mysql.com)
+- [Anthropic Claude API](https://www.anthropic.com) — AI model
+- [FastAPI](https://fastapi.tiangolo.com) — Backend framework
+- [Playwright](https://playwright.dev) — Browser automation
+- [noVNC](https://novnc.com) — Web-based VNC client
+- [MySQL](https://www.mysql.com) — Database
+- [Docker SDK for Python](https://docker-py.readthedocs.io) — Container orchestration

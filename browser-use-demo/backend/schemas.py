@@ -9,6 +9,8 @@ class SessionCreate(BaseModel):
     provider: str = Field(default="anthropic", description="API provider: anthropic, bedrock, vertex")
     system_prompt: str = Field(default="", description="Additional system prompt instructions")
     max_tokens: int = Field(default=8192, ge=1, le=32000)
+    display_width: int = Field(default=1920, description="Session display width in pixels")
+    display_height: int = Field(default=1080, description="Session display height in pixels")
 
 
 class SessionResponse(BaseModel):
@@ -19,6 +21,8 @@ class SessionResponse(BaseModel):
     is_active: bool
     model: str = "claude-sonnet-4-5-20250929"
     provider: str = "anthropic"
+    novnc_port: Optional[int] = None
+    container_status: Optional[str] = None
 
     class Config:
         from_attributes = True

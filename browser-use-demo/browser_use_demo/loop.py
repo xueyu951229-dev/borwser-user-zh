@@ -11,12 +11,13 @@ from enum import StrEnum
 from typing import Any, Optional
 
 import httpx
-from openai import OpenAI
+from openai import (
+    AsyncOpenAI)
 
 from anthropic import (
-    Anthropic,
-    AnthropicBedrock,
-    AnthropicVertex,
+    AsyncAnthropic,
+    AsyncAnthropicBedrock,
+    AsyncAnthropicVertex,
 )
 from anthropic.types.beta import (
     BetaCacheControlEphemeralParam,
@@ -66,6 +67,39 @@ If DOM-based actions (refs) aren't working, fall back to screenshot + coordinate
 * Close popups when they appear
 * Verify actions succeeded before moving on
 </TIPS>"""
+
+
+def _strip_images(messages: list[BetaMessageParam]) -> list[dict[str, Any]]:
+    """Return a copy of messages with base64 image blocks removed.
+
+    Keeps the original messages intact for DB/SSE; returns a lightweight
+    copy suitable for API calls (prevents 403 due to oversized requests).
+
+    Images may appear at two levels:
+      - Top-level content blocks (e.g. user messages with screenshots)
+      - Nested inside tool_result content arrays (browser tool responses)
+    """
+    def _without_images(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        clean: list[dict[str, Any]] = []
+        for b in blocks:
+            if isinstance(b, dict) and b.get("type") == "image":
+                continue
+            # Recurse into tool_result blocks which have their own content list
+            if isinstance(b, dict) and b.get("type") == "tool_result" and isinstance(b.get("content"), list):
+                b = {**b, "content": _without_images(b["content"])}
+            clean.append(b)
+        return clean
+
+    stripped: list[dict[str, Any]] = []
+    for msg in messages:
+        msg_copy: dict[str, Any] = {"role": msg["role"]}
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            msg_copy["content"] = _without_images(content)
+        else:
+            msg_copy["content"] = content
+        stripped.append(msg_copy)
+    return stripped
 
 
 def _anthropic_tools_to_openai(tools: list[dict]) -> list[dict]:
@@ -230,88 +264,67 @@ async def sampling_loop(
     system_text = f"{BROWSER_SYSTEM_PROMPT}{' ' + system_prompt_suffix if system_prompt_suffix else ''}"
     system = BetaTextBlockParam(type="text", text=system_text)
 
-    # Detect OpenAI-compatible proxy mode
+    # Use Anthropic native API format (supports tool calling).
+    # When ANTHROPIC_BASE_URL is set, route through the proxy while
+    # keeping the native Anthropic protocol (the OpenAI-compatible
+    # path does not reliably forward tool definitions to all proxies).
     base_url = os.getenv("ANTHROPIC_BASE_URL", None)
-    use_openai_proxy = provider == APIProvider.ANTHROPIC and base_url is not None
 
     while True:
         betas: list[str] = []
         enable_prompt_caching = False
 
-        if use_openai_proxy:
-            # --- OpenAI-compatible path (PackyAPI etc.) ---
-            openai_client = OpenAI(
+        if provider == APIProvider.ANTHROPIC:
+            client = AsyncAnthropic(
                 api_key=api_key,
-                base_url=base_url + "/v1",
+                base_url=base_url,  # route through proxy when set
                 max_retries=4,
             )
-
-            openai_messages: list[dict[str, Any]] = [
-                {"role": "system", "content": system["text"]},
-            ]
-            openai_messages += _anthropic_messages_to_openai(messages)
-
-            openai_tools = _anthropic_tools_to_openai(tool_collection.to_params())
-
-            try:
-                api_kwargs: dict[str, Any] = {
-                    "model": model,
-                    "messages": openai_messages,
-                    "max_tokens": max_tokens,
-                }
-                if openai_tools:
-                    api_kwargs["tools"] = openai_tools
-                    api_kwargs["tool_choice"] = "auto"
-
-                response = openai_client.chat.completions.create(**api_kwargs)
-            except Exception as e:
-                await api_response_callback(None, None, e)
-                raise e
-
-            await api_response_callback(None, response, None)
-            processed = _openai_response_to_processed(response)
-
+            enable_prompt_caching = True
+        elif provider == APIProvider.VERTEX:
+            client = AsyncAnthropicVertex()
+        elif provider == APIProvider.BEDROCK:
+            client = AsyncAnthropicBedrock()
         else:
-            # --- Native Anthropic path ---
-            if provider == APIProvider.ANTHROPIC:
-                client = Anthropic(api_key=api_key, max_retries=4)
-                enable_prompt_caching = True
-            elif provider == APIProvider.VERTEX:
-                client = AnthropicVertex()
-            elif provider == APIProvider.BEDROCK:
-                client = AnthropicBedrock()
+            raise ValueError(f"Unsupported provider: {provider}")
+
+        if enable_prompt_caching:
+            betas.append(PROMPT_CACHING_BETA_FLAG)
+            system = BetaTextBlockParam(
+                type="text",
+                text=system["text"],
+                cache_control=BetaCacheControlEphemeralParam(type="ephemeral"),
+            )
+
+        try:
+            # Strip base64 images from message history before sending to API.
+            # Images are kept in the original messages list for DB persistence
+            # and SSE display, but must not be sent to the API (→ 403 on large payloads).
+            api_messages = _strip_images(messages)
+            import json as _json
+            payload_size = len(_json.dumps(api_messages, default=str))
+            print(f"[DEBUG] API request: {len(api_messages)} messages, payload ~{payload_size // 1024}KB", flush=True)
+
+            api_kwargs = {
+                "max_tokens": max_tokens,
+                "messages": api_messages,
+                "model": model,
+                "system": [system],
+                "tools": tool_collection.to_params(),
+            }
+            if betas:
+                api_kwargs["betas"] = betas
+                response = await client.beta.messages.create(**api_kwargs)
             else:
-                raise ValueError(f"Unsupported provider: {provider}")
+                response = await client.messages.create(**api_kwargs)
+        except Exception as e:
+            await api_response_callback(None, None, e)
+            raise e
 
-            if enable_prompt_caching:
-                betas.append(PROMPT_CACHING_BETA_FLAG)
-                system = BetaTextBlockParam(
-                    type="text",
-                    text=system["text"],
-                    cache_control=BetaCacheControlEphemeralParam(type="ephemeral"),
-                )
+        await api_response_callback(None, response, None)
 
-            try:
-                api_kwargs = {
-                    "max_tokens": max_tokens,
-                    "messages": messages,
-                    "model": model,
-                    "system": [system],
-                    "tools": tool_collection.to_params(),
-                }
-                if betas:
-                    api_kwargs["betas"] = betas
-                    response = client.beta.messages.create(**api_kwargs)
-                else:
-                    response = client.messages.create(**api_kwargs)
-            except Exception as e:
-                await api_response_callback(None, None, e)
-                raise e
-
-            await api_response_callback(None, response, None)
-
-            processor = ResponseProcessor()
-            processed = processor.process_response(response)
+        processor = ResponseProcessor()
+        processed = processor.process_response(response)
 
         # Output all content blocks to callbacks
         for content_block in processed.assistant_content:

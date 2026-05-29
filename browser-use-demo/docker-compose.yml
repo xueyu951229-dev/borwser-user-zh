@@ -17,28 +17,40 @@ services:
       retries: 10
       interval: 5s
     restart: unless-stopped
+    networks:
+      - browser-use-net
 
-  browser-use:
+  main-backend:
     build:
       context: .
     image: browser-use-demo:latest
+    container_name: browser-use-main
+    # Run as root to access Docker socket (required for session container orchestration)
+    user: "0:0"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=${MYSQL_USER:-browseruse}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-password}
       - MYSQL_DB=${MYSQL_DB:-browseruse}
+      # Session container configuration
+      - SESSION_IMAGE=${SESSION_IMAGE:-browser-use-demo:latest}
+      - SESSION_NETWORK=${SESSION_NETWORK:-browser-use-net}
+      - NOVNC_PORT_MIN=${NOVNC_PORT_MIN:-6081}
+      - NOVNC_PORT_MAX=${NOVNC_PORT_MAX:-6180}
+      - SESSION_MEM_LIMIT=${SESSION_MEM_LIMIT:-2g}
+      - SESSION_CPU_QUOTA=${SESSION_CPU_QUOTA:-50000}
     volumes:
-      - ./validate_env.py:/home/browseruse/validate_env.py
+      # Mount Docker socket for container orchestration (Docker-outside-of-Docker)
+      - /var/run/docker.sock:/var/run/docker.sock
       - ./backend:/home/browseruse/backend
       - ./frontend:/home/browseruse/frontend
+      - ./browser_use_demo:/home/browseruse/browser_use_demo
       - ${HOME}/.anthropic:/home/browseruse/.anthropic
     ports:
-      - "${VNC_PORT:-5900}:5900"  # VNC
-      - "${NOVNC_PORT:-6080}:6080"  # noVNC
-      - "${HTTP_PORT:-8080}:8080"  # HTTP server
-      - "${API_PORT:-8000}:8000"  # FastAPI
+      - "${API_PORT:-8000}:8000"  # FastAPI only — VNC/NOVNC ports are per-session
     stdin_open: true
     tty: true
     env_file:
@@ -46,6 +58,15 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    networks:
+      - browser-use-net
+    # Override: start FastAPI only — no Xvfb/VNC/Chrome in the main container
+    command: >
+      bash -c "
+        pip install -r /home/browseruse/backend/requirements.txt --quiet &&
+        echo 'Starting FastAPI server...' &&
+        uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+      "
     develop:
       watch:
         - path: ./browser_use_demo
@@ -54,9 +75,11 @@ services:
         - path: ./backend
           action: sync+restart
           target: /home/browseruse/backend
-        - path: ./validate_env.py
-          action: rebuild
-          target: /home/browseruse/validate_env.py
+
+networks:
+  browser-use-net:
+    driver: bridge
+    name: browser-use-net
 
 volumes:
   mysql_data:

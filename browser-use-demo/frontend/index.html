@@ -230,13 +230,11 @@ body {
   overflow: hidden;
 }
 .preview-container iframe {
-  width: 100%;
-  height: 100%;
+  width: 240%;
+  height: 240%;
   border: none;
   transform: scale(0.4);
   transform-origin: 0 0;
-  width: 250%;
-  height: 250%;
 }
 .preview-placeholder {
   text-align: center;
@@ -379,6 +377,7 @@ body {
     <div class="preview-header">
       <h3>🖥️ Browser Preview</h3>
       <button class="btn" onclick="togglePreview()" style="font-size:12px;">Toggle</button>
+      <button class="btn" onclick="openVNC()" style="font-size:12px;">🔗 Open VNC</button>
     </div>
     <div class="preview-container" id="previewContainer">
       <div class="preview-placeholder" id="previewPlaceholder">
@@ -598,7 +597,12 @@ function connectSSE(sessionId) {
   eventSource.addEventListener('status', (event) => {
     handleStatusEvent(event);
   });
-  
+
+  eventSource.addEventListener('connected', (event) => {
+    const data = JSON.parse(event.data);
+    console.log('SSE connected for session:', data.session_id);
+  });
+
   eventSource.onerror = (error) => {
     console.error('SSE error:', error);
     updateConnectionStatus(false);
@@ -800,6 +804,16 @@ async function loadVNCPreview(sessionId) {
 function togglePreview() {
   const previewPanel = document.querySelector('.preview-panel');
   previewPanel.style.display = previewPanel.style.display === 'none' ? 'flex' : 'none';
+}
+
+function openVNC() {
+  if (!currentSessionId) return;
+  fetch(`${API_BASE}/vnc/${currentSessionId}`)
+    .then(r => r.json())
+    .then(info => {
+      window.open(info.novnc_url, '_blank', 'width=1024,height=768');
+    })
+    .catch(e => alert('VNC not available: ' + e.message));
 }
 
 // ============================================================

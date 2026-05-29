@@ -159,6 +159,11 @@ class BrowserTool(BaseAnthropicTool):
     """
     A browser automation tool using Playwright for web interaction.
 
+    Supports two modes:
+    - CDP mode: Connect to a remote Chromium via Chrome DevTools Protocol
+      (used for per-session Docker container isolation).
+    - Local mode: Launch Chromium locally (legacy / development fallback).
+
     Key actions for extracting content:
     - read_page: Extract structured DOM tree with element references (USE THIS for analyzing page structure)
     - get_page_text: Extract all text content from the page (USE THIS for reading articles/posts)
@@ -182,23 +187,26 @@ class BrowserTool(BaseAnthropicTool):
     _page: Optional[Page] = None
     _playwright = None
 
-    def __init__(self):
-        """Initialize the browser tool with standard viewport dimensions."""
+    def __init__(self, cdp_url: Optional[str] = None):
+        """
+        Initialize the browser tool.
+
+        Args:
+            cdp_url: If provided, connect to existing Chromium via CDP
+                     (e.g., "http://session-container:9222").
+                     If None, launch Chromium locally (legacy mode).
+        """
         super().__init__()
         # Use constants for display configuration
         self.width = BROWSER_WIDTH
         self.height = BROWSER_HEIGHT
         self._initialized = False
         self._event_loop = None  # Track which event loop we're initialized in
-        self.cdp_url = None  # Initialize CDP URL attribute for cleanup method
+        self.cdp_url = cdp_url  # CDP URL for remote Chromium connection
 
     @property
     def options(self) -> BrowserOptions:
         """Return browser display options."""
-        # Note: This implementation uses fixed 1920x1080 dimensions with empirical
-        # coordinate correction. For the recommended approach using client-side
-        # downscaling, see the "Handle coordinate scaling" section in the computer
-        # use documentation.
         return {
             "display_width_px": self.width,
             "display_height_px": self.height,
@@ -216,22 +224,7 @@ class BrowserTool(BaseAnthropicTool):
         )
 
     async def _ensure_browser(self) -> None:
-        """Launch browser and ensure page is ready."""
-        # NOTE: We intentionally DON'T reset the browser if the event loop changes
-        # The browser should persist across conversation turns
-        # Commenting out event loop check that was causing browser resets:
-        # try:
-        #     current_loop = asyncio.get_running_loop()
-        #     if self._initialized and hasattr(self, "_event_loop"):
-        #         if self._event_loop != current_loop:
-        #             self._initialized = False
-        #             self._browser = None
-        #             self._context = None
-        #             self._page = None
-        #             self._playwright = None
-        # except RuntimeError:
-        #     pass
-
+        """Launch browser or connect via CDP, and ensure page is ready."""
         if self._initialized:
             print(
                 f"[Browser] Reusing existing browser instance",
@@ -247,11 +240,6 @@ class BrowserTool(BaseAnthropicTool):
                 )
 
         if not self._initialized:
-            print(
-                f"[Browser] Initializing browser for first time",
-                file=sys.stderr,
-                flush=True,
-            )
             if self._playwright is None:
                 from playwright.async_api import async_playwright
 
@@ -261,58 +249,99 @@ class BrowserTool(BaseAnthropicTool):
                 viewport_width = self.width
                 viewport_height = self.height
 
-                is_docker = os.path.exists("/.dockerenv")
+                if self.cdp_url:
+                    # ============================================================
+                    # CDP MODE: Connect to remote Chromium in session container
+                    # ============================================================
+                    print(
+                        f"[Browser] Connecting to remote Chromium via CDP: {self.cdp_url}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    self._browser = await self._playwright.chromium.connect_over_cdp(
+                        self.cdp_url
+                    )
+                    # connect_over_cdp returns a Browser with existing contexts/pages
+                    # (Chromium starts with an about:blank tab)
+                    contexts = self._browser.contexts
+                    if contexts:
+                        self._context = contexts[0]
+                        pages = self._context.pages
+                        self._page = pages[0] if pages else await self._context.new_page()
+                    else:
+                        self._context = await self._browser.new_context(
+                            viewport={"width": viewport_width, "height": viewport_height},
+                            user_agent=(
+                                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/120.0.0.0 Safari/537.36"
+                            ),
+                        )
+                        self._page = await self._context.new_page()
 
-                launch_args = [
-                    "--start-maximized",
-                    f"--window-size={viewport_width},{viewport_height}",
-                    "--window-position=0,0",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-gpu-sandbox",
-                    "--disable-software-rasterizer",
-                ]
+                    self._page.set_default_timeout(30000)
+                    print(
+                        f"[Browser] Connected to remote Chromium via CDP. "
+                        f"Viewport: {viewport_width}x{viewport_height}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
-                if is_docker:
-                    launch_args.extend([
-                        f"--display=:{DISPLAY_NUM}",
-                        "--disable-infobars",
-                        "--disable-session-crashed-bubble",
-                        "--no-first-run",
-                        "--disable-features=TranslateUI",
-                        "--disable-component-extensions-with-background-pages",
-                    ])
+                else:
+                    # ============================================================
+                    # LOCAL MODE: Launch Chromium directly (legacy / dev fallback)
+                    # ============================================================
+                    is_docker = os.path.exists("/.dockerenv")
 
-                print(
-                    f"[Browser] Launching browser with viewport {viewport_width}x{viewport_height}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+                    launch_args = [
+                        "--start-maximized",
+                        f"--window-size={viewport_width},{viewport_height}",
+                        "--window-position=0,0",
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-dev-shm-usage",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-gpu-sandbox",
+                        "--disable-software-rasterizer",
+                    ]
 
-                self._browser = await self._playwright.chromium.launch(
-                    headless=False,
-                    args=launch_args,
-                )
+                    if is_docker:
+                        launch_args.extend([
+                            f"--display=:{DISPLAY_NUM}",
+                            "--disable-infobars",
+                            "--disable-session-crashed-bubble",
+                            "--no-first-run",
+                            "--disable-features=TranslateUI",
+                            "--disable-component-extensions-with-background-pages",
+                        ])
 
-                self._context = await self._browser.new_context(
-                    viewport={"width": viewport_width, "height": viewport_height},
-                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                )
-                self._page = await self._context.new_page()
-                self._page.set_default_timeout(30000)
+                    print(
+                        f"[Browser] Launching local browser with viewport {viewport_width}x{viewport_height}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
-                print(
-                    f"[Browser] Browser initialized with viewport: {viewport_width}x{viewport_height}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                print(
-                    f"[Browser] New browser instance created",
-                    file=sys.stderr,
-                    flush=True,
-                )
+                    self._browser = await self._playwright.chromium.launch(
+                        headless=False,
+                        args=launch_args,
+                    )
+
+                    self._context = await self._browser.new_context(
+                        viewport={"width": viewport_width, "height": viewport_height},
+                        user_agent=(
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                    )
+                    self._page = await self._context.new_page()
+                    self._page.set_default_timeout(30000)
+
+                    print(
+                        f"[Browser] Local browser initialized. Viewport: {viewport_width}x{viewport_height}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
             self._initialized = True
             try:
@@ -349,9 +378,9 @@ class BrowserTool(BaseAnthropicTool):
             js_expression = f"({script})({escaped_args})"
             return await self._page.evaluate(js_expression)
 
-    async def _take_screenshot(self) -> ToolResult:
+    async def _take_screenshot(self, max_width: int = 800) -> ToolResult:
         """
-        Take a visual screenshot of the current page.
+        Take a visual screenshot of the current page, scaled down for chat display.
         NOTE: This only returns an image, not text content.
         Use read_page or get_page_text to extract actual content.
         """
@@ -359,13 +388,24 @@ class BrowserTool(BaseAnthropicTool):
             raise ToolError("Browser not initialized")
 
         try:
-            # Save screenshot directly to file (like browser.py does with scrot)
-            screenshot_path = OUTPUT_DIR / f"screenshot_{uuid4().hex}.png"
-            await self._page.screenshot(path=str(screenshot_path), full_page=False)
+            screenshot_path = OUTPUT_DIR / f"screenshot_{uuid4().hex}.jpeg"
+            # Take screenshot as JPEG at reduced quality to keep base64 small
+            # (full-quality 1920x1080 PNG would be ~1MB base64 — too large for the chat DOM)
+            await self._page.screenshot(
+                path=str(screenshot_path),
+                full_page=False,
+                type="jpeg",
+                quality=50,
+            )
 
-            # Read the file and encode to base64
             screenshot_bytes = screenshot_path.read_bytes()
             image_base64 = base64.b64encode(screenshot_bytes).decode()
+
+            # Clean up screenshot file to avoid disk accumulation
+            try:
+                screenshot_path.unlink()
+            except Exception:
+                pass
 
             return ToolResult(output="", error=None, base64_image=image_base64)
         except Exception as e:
@@ -379,16 +419,21 @@ class BrowserTool(BaseAnthropicTool):
             raise ToolError("Browser not initialized")
 
         try:
-            # Take screenshot with clipping
-            screenshot_path = OUTPUT_DIR / f"zoom_screenshot_{uuid4().hex}.png"
+            # Take screenshot with clipping, use JPEG to keep size small
+            screenshot_path = OUTPUT_DIR / f"zoom_{uuid4().hex}.jpeg"
             await self._page.screenshot(
                 path=str(screenshot_path),
                 clip={"x": x, "y": y, "width": width, "height": height},
+                type="jpeg",
+                quality=50,
             )
 
-            # Read the file and encode to base64
             screenshot_bytes = screenshot_path.read_bytes()
             image_base64 = base64.b64encode(screenshot_bytes).decode()
+            try:
+                screenshot_path.unlink()
+            except Exception:
+                pass
 
             return ToolResult(output="", error=None, base64_image=image_base64)
         except Exception as e:

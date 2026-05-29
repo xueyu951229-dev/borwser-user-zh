@@ -2,10 +2,10 @@
 FastAPI Backend for Computer Use Agent Session Management.
 
 Provides:
-- Session CRUD APIs
+- Session CRUD APIs with per-session Docker container isolation
 - SSE (Server-Sent Events) real-time streaming
 - Database persistence for chat history
-- Concurrent session support
+- Concurrent session support with isolated desktop environments
 """
 
 import asyncio
@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(env_path, override=True)
 from datetime import datetime
-from typing import Optional, AsyncGenerator
+from typing import Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException, Request
@@ -37,14 +37,32 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from browser_use_demo.loop import sampling_loop, APIProvider
 from browser_use_demo.tools import BrowserTool, ToolResult
 
-from .database import init_db, get_session, AsyncSessionLocal
-from .models import Session as SessionModel, Message as MessageModel, Base
+from .container_manager import ContainerManager, SessionContainerInfo
+from .database import AsyncSessionLocal, init_db, get_session
+from .models import Session as SessionModel, Message as MessageModel
 from .schemas import (
     SessionCreate, SessionResponse, SessionUpdate,
     ChatRequest, MessageResponse
 )
+from .tasks import SessionCleanupTask
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# Docker container manager (session-per-container isolation)
+# ============================================================
+
+try:
+    container_manager = ContainerManager()
+    logger.info("ContainerManager initialized successfully.")
+except RuntimeError as e:
+    logger.warning("ContainerManager unavailable: %s. Sessions will use local browser fallback.", e)
+    container_manager = None
+
+cleanup_task: Optional[SessionCleanupTask] = (
+    SessionCleanupTask(container_manager) if container_manager else None
+)
 
 
 # ============================================================
@@ -56,16 +74,39 @@ _session_lock = asyncio.Lock()
 
 
 async def _cleanup_session(session_id: str):
-    """Clean up session resources."""
+    """Clean up session resources including Docker container."""
     async with _session_lock:
-        if session_id in active_sessions:
-            browser_tool = active_sessions[session_id].get("browser_tool")
-            if browser_tool:
+        session_data = active_sessions.get(session_id)
+        if not session_data:
+            # Still clean up SSE queue even if session data is gone
+            if session_id in sse_queues:
                 try:
-                    await browser_tool.cleanup()
-                except Exception as e:
-                    logger.warning("Error cleaning up browser tool for session %s: %s", session_id, e)
-            active_sessions.pop(session_id, None)
+                    sse_queues[session_id].put_nowait(None)
+                except Exception:
+                    pass
+                sse_queues.pop(session_id, None)
+            return
+
+        # 1. Clean up browser tool
+        browser_tool = session_data.get("browser_tool")
+        if browser_tool:
+            try:
+                await browser_tool.cleanup()
+            except Exception as e:
+                logger.warning("Error cleaning up browser tool for session %s: %s", session_id, e)
+
+        # 2. Stop and remove session Docker container
+        container_info: Optional[SessionContainerInfo] = session_data.get("container_info")
+        if container_info and container_manager:
+            try:
+                await container_manager.stop_session_container(container_info.container_id)
+                logger.info("Removed session container for %s.", session_id)
+            except Exception as e:
+                logger.warning("Error removing container for session %s: %s", session_id, e)
+
+        active_sessions.pop(session_id, None)
+
+        # 3. Close SSE queue
         if session_id in sse_queues:
             try:
                 sse_queues[session_id].put_nowait(None)
@@ -78,9 +119,22 @@ async def _cleanup_session(session_id: str):
 async def lifespan(app: FastAPI):
     """Application lifespan for startup and shutdown."""
     await init_db()
+
+    # Start background cleanup task
+    if cleanup_task:
+        await cleanup_task.start()
+
     yield
+
+    # Shutdown: stop cleanup task and ALL session containers
+    if cleanup_task:
+        await cleanup_task.stop()
+
     for sid in list(active_sessions.keys()):
         await _cleanup_session(sid)
+
+    if container_manager:
+        await container_manager.cleanup_all_sessions()
 
 
 app = FastAPI(title="Computer Use Agent API", version="1.0.0", lifespan=lifespan)
@@ -103,24 +157,51 @@ async def create_session(
     session_data: SessionCreate,
     db: AsyncSession = Depends(get_session),
 ):
-    """Create a new session."""
+    """Create a new session with an isolated Docker container."""
     session_id = str(uuid.uuid4())
     now = datetime.utcnow()
 
+    # --- Create per-session Docker container ---
+    container_info: Optional[SessionContainerInfo] = None
+    if container_manager:
+        try:
+            container_info = await container_manager.create_session_container(session_id)
+        except Exception as e:
+            logger.exception("Failed to create session container.")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to create session container: {e}",
+            )
+    else:
+        logger.warning(
+            "No ContainerManager available — session %s will use local browser (no isolation).",
+            session_id,
+        )
+
+    # --- Persist to database ---
     db_session = SessionModel(
         id=session_id,
         title=session_data.title or f"Session {now.strftime('%Y-%m-%d %H:%M')}",
         created_at=now,
         updated_at=now,
         is_active=True,
+        container_id=container_info.container_id if container_info else None,
+        container_name=container_info.container_name if container_info else None,
+        novnc_port=container_info.novnc_host_port if container_info else None,
+        cdp_url=container_info.cdp_url if container_info else None,
     )
     db.add(db_session)
     await db.commit()
     await db.refresh(db_session)
 
+    # --- Create BrowserTool (CDP mode if container, local otherwise) ---
+    cdp_url = container_info.cdp_url if container_info else None
+    browser_tool = BrowserTool(cdp_url=cdp_url)
+
     async with _session_lock:
         active_sessions[session_id] = {
-            "browser_tool": BrowserTool(),
+            "browser_tool": browser_tool,
+            "container_info": container_info,
             "messages": [],
             "model": session_data.model,
             "provider": session_data.provider,
@@ -139,6 +220,8 @@ async def create_session(
         is_active=db_session.is_active,
         model=session_data.model,
         provider=session_data.provider,
+        novnc_port=container_info.novnc_host_port if container_info else None,
+        container_status="running" if container_info else None,
     )
 
 
@@ -151,16 +234,28 @@ async def list_sessions(db: AsyncSession = Depends(get_session)):
         .order_by(SessionModel.updated_at.desc())
     )
     sessions = result.scalars().all()
-    return [
-        SessionResponse(
-            id=s.id,
-            title=s.title,
-            created_at=s.created_at,
-            updated_at=s.updated_at,
-            is_active=s.is_active,
+
+    # Enrich with live container status
+    output = []
+    for s in sessions:
+        container_status = None
+        if s.container_id and container_manager:
+            try:
+                container_status = await container_manager.get_container_status(s.container_id)
+            except Exception:
+                container_status = "unknown"
+        output.append(
+            SessionResponse(
+                id=s.id,
+                title=s.title,
+                created_at=s.created_at,
+                updated_at=s.updated_at,
+                is_active=s.is_active,
+                novnc_port=s.novnc_port,
+                container_status=container_status,
+            )
         )
-        for s in sessions
-    ]
+    return output
 
 
 @app.get("/sessions/{session_id}", response_model=SessionResponse)
@@ -173,12 +268,22 @@ async def get_session_by_id(
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    container_status = None
+    if session.container_id and container_manager:
+        try:
+            container_status = await container_manager.get_container_status(session.container_id)
+        except Exception:
+            container_status = "unknown"
+
     return SessionResponse(
         id=session.id,
         title=session.title,
         created_at=session.created_at,
         updated_at=session.updated_at,
         is_active=session.is_active,
+        novnc_port=session.novnc_port,
+        container_status=container_status,
     )
 
 
@@ -206,6 +311,7 @@ async def update_session(
         created_at=session.created_at,
         updated_at=session.updated_at,
         is_active=session.is_active,
+        novnc_port=session.novnc_port,
     )
 
 
@@ -214,12 +320,16 @@ async def delete_session(
     session_id: str,
     db: AsyncSession = Depends(get_session),
 ):
-    """Deactivate a session and clean up resources."""
+    """Deactivate a session and clean up its Docker container."""
     result = await db.execute(select(SessionModel).where(SessionModel.id == session_id))
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     session.is_active = False
+    session.container_id = None
+    session.container_name = None
+    session.novnc_port = None
+    session.cdp_url = None
     session.updated_at = datetime.utcnow()
     await db.commit()
     await _cleanup_session(session_id)
@@ -251,17 +361,37 @@ async def get_messages(
 
 @app.get("/vnc/{session_id}")
 async def get_vnc_info(session_id: str, request: Request):
-    """Get VNC connection info for a session."""
-    if session_id not in active_sessions:
-        raise HTTPException(status_code=404, detail="Session not active")
-    vnc_port = os.getenv("VNC_PORT", "5900")
-    novnc_port = os.getenv("NOVNC_PORT", "6080")
+    """Get VNC connection info for a session. Returns session-specific noVNC port."""
+
+    novnc_port: Optional[int] = None
+
+    # 1. Check in-memory active sessions first
+    if session_id in active_sessions:
+        container_info = active_sessions[session_id].get("container_info")
+        if container_info:
+            novnc_port = container_info.novnc_host_port
+
+    # 2. Fallback: load from database
+    if novnc_port is None:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(SessionModel).where(SessionModel.id == session_id)
+            )
+            session = result.scalar_one_or_none()
+            if session and session.novnc_port:
+                novnc_port = session.novnc_port
+
+    if novnc_port is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not active or no VNC available. Create a session first.",
+        )
+
     host = request.headers.get("host", "localhost").split(":")[0]
     return {
         "session_id": session_id,
-        "vnc_port": int(vnc_port),
-        "novnc_url": f"http://{host}:{novnc_port}/vnc.html?host={host}&port={vnc_port}",
-        "vnc_url": f"vnc://{host}:{vnc_port}",
+        "novnc_port": novnc_port,
+        "novnc_url": f"http://{host}:{novnc_port}/vnc.html?host={host}&port={novnc_port}",
     }
 
 
@@ -301,6 +431,8 @@ async def sse_stream(session_id: str, request: Request):
     queue: asyncio.Queue = sse_queues[session_id]
 
     async def event_generator():
+        # Send initial connected event so the client knows the stream is live
+        yield _sse_event("connected", {"session_id": session_id})
         while True:
             if await request.is_disconnected():
                 break
@@ -352,8 +484,6 @@ async def chat_endpoint(
     session_data["messages"].append(user_message)
 
     await _save_message(session_id, "user", json.dumps(user_message["content"]))
-    # Track that the user message is already persisted so the post-loop save
-    # doesn't re-save it as a duplicate.
     session_data["_saved_count"] = len(session_data["messages"])
     await _send_sse(session_id, "status", {"content": "Thinking..."})
 
@@ -407,6 +537,16 @@ async def chat_endpoint(
             await _save_message(session_id, role, content_str)
         session_data["_saved_count"] = len(updated_messages)
 
+        # Update session's updated_at timestamp
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(SessionModel).where(SessionModel.id == session_id)
+            )
+            db_session = result.scalar_one_or_none()
+            if db_session:
+                db_session.updated_at = datetime.utcnow()
+                await db.commit()
+
     except Exception as e:
         await _send_sse(session_id, "error", {"content": str(e)})
     finally:
@@ -435,10 +575,20 @@ async def _save_message(session_id: str, role: str, content: str):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint with container stats."""
+    running_containers = 0
+    if container_manager:
+        try:
+            containers = await container_manager.list_session_containers()
+            running_containers = len(containers)
+        except Exception:
+            pass
+
     return {
         "status": "healthy",
         "active_sessions": len(active_sessions),
+        "running_containers": running_containers,
+        "container_manager_available": container_manager is not None,
         "timestamp": datetime.utcnow().isoformat(),
     }
 

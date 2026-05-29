@@ -35,6 +35,7 @@ RUN apt-get update && \
     # Network tools
     net-tools \
     netcat \
+    socat \
     # PPA req
     software-properties-common && \
     # Browser and desktop apps
@@ -96,6 +97,9 @@ RUN python -m pip install --upgrade pip==23.1.2 setuptools==58.0.4 wheel==0.40.0
 COPY --chown=$USERNAME:$USERNAME browser_use_demo/requirements.txt $HOME/browser_use_demo/requirements.txt
 RUN python -m pip install -r $HOME/browser_use_demo/requirements.txt
 
+# Install Docker SDK for container orchestration
+RUN python -m pip install docker>=7.0.0 httpx
+
 # Install Playwright and Chromium
 RUN python -m playwright install chromium && \
     python -m playwright install-deps chromium
@@ -106,9 +110,20 @@ COPY --chown=$USERNAME:$USERNAME browser_use_demo/ $HOME/browser_use_demo/
 COPY --chown=$USERNAME:$USERNAME backend/ $HOME/backend/
 COPY --chown=$USERNAME:$USERNAME frontend/ $HOME/frontend/
 
+# Fix Windows CRLF line endings in shell scripts (git may convert on checkout)
+RUN for f in $HOME/session-entrypoint.sh $HOME/*.sh; do \
+        if [ -f "$f" ]; then \
+            sed -i 's/\r$//' "$f" 2>/dev/null || true; \
+            tr -d '\r' < "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"; \
+            chmod +x "$f"; \
+        fi; \
+    done
+
 # Display configuration - hardcoded values
 ENV DISPLAY_NUM=1
 ENV HEIGHT=1080
 ENV WIDTH=1920
 
-ENTRYPOINT [ "./entrypoint.sh" ]
+# ENTRYPOINT is set per deployment mode:
+# - docker-compose: FastAPI-only (no Xvfb/VNC)
+# - session container: ./session-entrypoint.sh

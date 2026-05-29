@@ -83,7 +83,7 @@ class ResponseProcessor:
         self,
         tool_uses: list[dict[str, Any]],
         tool_collection: ToolCollection,
-        tool_output_callback: Optional[Callable[[ToolResult, str], None]] = None
+        tool_output_callback: Optional[Callable[[ToolResult, str], Any]] = None
     ) -> list[BetaToolResultBlockParam]:
         """
         Execute tools and collect results.
@@ -111,7 +111,7 @@ class ResponseProcessor:
                 result = await tool(**tool_input)
 
                 if tool_output_callback:
-                    tool_output_callback(result, tool_id)
+                    await tool_output_callback(result, tool_id)
 
                 tool_result = self._build_tool_result(result, tool_id)
                 tool_results.append(tool_result)

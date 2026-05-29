@@ -13,6 +13,11 @@ class Session(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+    # Per-session Docker container tracking
+    container_id = Column(String(64), nullable=True)
+    container_name = Column(String(128), nullable=True)
+    novnc_port = Column(Integer, nullable=True)
+    cdp_url = Column(String(256), nullable=True)
 
 
 class Message(Base):
