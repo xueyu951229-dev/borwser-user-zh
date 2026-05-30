@@ -28,8 +28,6 @@ services:
     # Run as root to access Docker socket (required for session container orchestration)
     user: "0:0"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_USER=${MYSQL_USER:-browseruse}
