@@ -46,6 +46,7 @@ services:
       - ./backend:/home/browseruse/backend
       - ./frontend:/home/browseruse/frontend
       - ./browser_use_demo:/home/browseruse/browser_use_demo
+      - ./image:/home/browseruse/image
       - ${HOME}/.anthropic:/home/browseruse/.anthropic
     ports:
       - "${API_PORT:-8000}:8000"  # FastAPI only — VNC/NOVNC ports are per-session

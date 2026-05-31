@@ -9,6 +9,7 @@ Provides:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -344,7 +345,7 @@ async def get_messages(
     result = await db.execute(
         select(MessageModel)
         .where(MessageModel.session_id == session_id)
-        .order_by(MessageModel.created_at.asc())
+        .order_by(MessageModel.created_at.asc(), MessageModel.id.asc())
     )
     messages = result.scalars().all()
     return [
@@ -531,9 +532,11 @@ async def chat_endpoint(
         session_data["messages"] = updated_messages
 
         saved_count = session_data.get("_saved_count", 0)
+        screenshots_dir = os.path.join(os.path.dirname(__file__), "..", "image")
         for msg in updated_messages[saved_count:]:
             role = msg.get("role", "assistant")
             content_str = json.dumps(msg.get("content", []))
+            content_str = _save_screenshots_from_content(content_str, session_id, screenshots_dir)
             await _save_message(session_id, role, content_str)
         session_data["_saved_count"] = len(updated_messages)
 
@@ -552,6 +555,83 @@ async def chat_endpoint(
     finally:
         session_data["_processing"] = False
         await _send_sse(session_id, "done", {"message": "Processing complete"})
+
+
+def _save_screenshots_from_content(content_str: str, session_id: str, screenshots_dir: str) -> str:
+    """Extract base64 images from message content, save to disk, replace with file refs.
+
+    Walks all content blocks (top-level and nested inside tool_result.content arrays),
+    saves each base64 image as a PNG file, and replaces the base64 data with a file
+    reference so the database stores lightweight JSON.
+
+    Returns the modified JSON string, or the original string if no images were found.
+    """
+    try:
+        blocks = json.loads(content_str)
+    except (json.JSONDecodeError, TypeError):
+        return content_str
+
+    if not isinstance(blocks, list):
+        return content_str
+
+    def _process_block(block: dict) -> dict | None:
+        """Process a single block – return replacement or None to keep original."""
+        if not isinstance(block, dict):
+            return None
+        if block.get("type") == "image":
+            source = block.get("source", {})
+            if isinstance(source, dict) and source.get("type") == "base64":
+                b64_data = source.get("data", "")
+                if b64_data:
+                    try:
+                        img_bytes = base64.b64decode(b64_data)
+                    except Exception:
+                        logger.warning("Failed to decode base64 image for session %s", session_id)
+                        return None
+                    # Ensure directory exists
+                    img_dir = os.path.join(screenshots_dir, "screenshots", session_id)
+                    os.makedirs(img_dir, exist_ok=True)
+                    filename = f"{uuid.uuid4().hex}.png"
+                    filepath = os.path.join(img_dir, filename)
+                    try:
+                        with open(filepath, "wb") as f:
+                            f.write(img_bytes)
+                    except Exception as e:
+                        logger.warning("Failed to save screenshot for session %s: %s", session_id, e)
+                        return None
+                    relative_path = f"screenshots/{session_id}/{filename}"
+                    logger.info("Saved screenshot: %s (%d bytes)", relative_path, len(img_bytes))
+                    return {"type": "image_file", "path": relative_path}
+        # Recurse into tool_result blocks — also truncate long text in tool results
+        if block.get("type") == "tool_result":
+            inner = block.get("content")
+            if isinstance(inner, list):
+                new_inner = _process_content_list(inner, inside_tool_result=True)
+                return {**block, "content": new_inner}
+        return None
+
+    def _process_content_list(content_list: list, inside_tool_result: bool = False) -> list:
+        """Process a list of content blocks, replacing image blocks with file refs
+        and truncating long text inside tool_result entries."""
+        result = []
+        for block in content_list:
+            replacement = _process_block(block)
+            if replacement is not None:
+                result.append(replacement)
+            else:
+                # Truncate massive text blocks inside tool_result (e.g. get_page_text output)
+                if inside_tool_result and isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text", "")
+                    if isinstance(text, str) and len(text) > 2000:
+                        truncated = text[:2000] + f"\n\n... [truncated {len(text) - 2000} chars for storage]"
+                        result.append({**block, "text": truncated})
+                        logger.info("Truncated tool_result text: %d → %d chars", len(text), len(truncated))
+                        continue
+                result.append(block)
+        return result
+
+    new_blocks = _process_content_list(blocks)
+    return json.dumps(new_blocks)
 
 
 async def _save_message(session_id: str, role: str, content: str):
@@ -592,6 +672,15 @@ async def health_check():
         "timestamp": datetime.utcnow().isoformat(),
     }
 
+
+# ============================================================
+# Mount static screenshot files (before frontend so /screenshots/ routes take priority)
+# ============================================================
+
+screenshots_dir = os.path.join(os.path.dirname(__file__), "..", "image")
+# Ensure the directory exists (including first run and Docker environments)
+os.makedirs(os.path.join(screenshots_dir, "screenshots"), exist_ok=True)
+app.mount("/screenshots", StaticFiles(directory=screenshots_dir), name="screenshots")
 
 # ============================================================
 # Mount static frontend files

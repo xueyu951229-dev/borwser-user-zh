@@ -629,6 +629,11 @@ function handleTextEvent(event) {
     currentMessageDiv = addMessage('assistant', '');
   }
   currentMessageDiv.querySelector('.bubble').textContent += data.content;
+  // Re-append the text bubble to the end so it always stays below tool messages
+  const container = document.getElementById('messages');
+  if (currentMessageDiv.parentNode === container) {
+    container.appendChild(currentMessageDiv);
+  }
   scrollToBottom();
 }
 
@@ -660,12 +665,19 @@ function handleScreenshotEvent(event) {
   if (data.base64) {
     const img = document.createElement('img');
     img.src = `data:image/png;base64,${data.base64}`;
-    
+
+    let targetDiv;
     if (currentMessageDiv) {
+      targetDiv = currentMessageDiv;
       currentMessageDiv.querySelector('.bubble').appendChild(img);
     } else {
-      const messageDiv = addMessage('assistant', '');
-      messageDiv.querySelector('.bubble').appendChild(img);
+      targetDiv = addMessage('assistant', '');
+      targetDiv.querySelector('.bubble').appendChild(img);
+    }
+    // Re-append to keep screenshots at the bottom (below any tool messages)
+    const container = document.getElementById('messages');
+    if (targetDiv.parentNode === container) {
+      container.appendChild(targetDiv);
     }
     scrollToBottom();
   }
@@ -730,6 +742,44 @@ async function sendMessage() {
   }
 }
 
+function renderContentBlocks(blocks, containerEl = null) {
+  /* Recursively render content blocks (text, tool_use, tool_result, image_file, image) to HTML.
+     Returns an HTML string, or appends images to containerEl if provided for screenshot events. */
+  let html = '';
+  if (!Array.isArray(blocks)) return html;
+
+  blocks.forEach(block => {
+    if (typeof block !== 'object' || !block) return;
+
+    if (block.type === 'text') {
+      html += escapeHtml(block.text || '');
+    } else if (block.type === 'tool_use') {
+      html += '<div class="tool-name">🔧 ' + escapeHtml(block.name || '') + '</div>';
+      html += '<pre>' + escapeHtml(JSON.stringify(block.input, null, 2)) + '</pre>';
+    } else if (block.type === 'image' && block.source) {
+      // Base64 inline image (fallback for edge cases)
+      const src = 'data:' + (block.source.media_type || 'image/png') + ';base64,' + (block.source.data || '');
+      html += '<img src="' + src + '" alt="Screenshot" style="max-width:100%;border-radius:6px;margin-top:8px;border:1px solid #30363d;">';
+    } else if (block.type === 'image_file' && block.path) {
+      // Image stored on disk — fetch from server
+      const src = '/screenshots/' + block.path;
+      html += '<img src="' + src + '" alt="Screenshot" style="max-width:100%;border-radius:6px;margin-top:8px;border:1px solid #30363d;" loading="lazy">';
+    } else if (block.type === 'tool_result') {
+      html += '<div class="tool-name">📋 Tool Result</div>';
+      const inner = block.content;
+      if (Array.isArray(inner)) {
+        html += renderContentBlocks(inner);
+      } else if (typeof inner === 'string') {
+        html += '<pre>' + escapeHtml(inner) + '</pre>';
+      }
+      if (block.is_error) {
+        html += '<pre style="color:#f85149;">Error in tool execution</pre>';
+      }
+    }
+  });
+  return html;
+}
+
 async function loadMessages(sessionId) {
   try {
     const response = await fetch(`${API_BASE}/sessions/${sessionId}/messages`);
@@ -741,17 +791,35 @@ async function loadMessages(sessionId) {
       messages.forEach(msg => {
         try {
           const content = JSON.parse(msg.content);
-          let textContent = '';
           if (Array.isArray(content)) {
+            // Split mixed content blocks into separate message bubbles
+            // so text and tool_use don't get lumped into one bubble.
             content.forEach(block => {
+              if (typeof block !== 'object' || !block) return;
               if (block.type === 'text') {
-                textContent += block.text;
+                const text = block.text || '';
+                if (text.trim()) {
+                  addMessage(msg.role === 'user' ? 'user' : 'assistant', escapeHtml(text));
+                }
               } else if (block.type === 'tool_use') {
-                textContent += `\nTool: ${block.name}\n${JSON.stringify(block.input, null, 2)}`;
+                const toolHtml = '<div class="tool-name">🔧 ' + escapeHtml(block.name || '') + '</div>' +
+                  '<pre>' + escapeHtml(JSON.stringify(block.input, null, 2)) + '</pre>';
+                addMessage('tool', toolHtml);
+              } else if (block.type === 'tool_result') {
+                const resultHtml = renderContentBlocks([block]);
+                addMessage('tool', resultHtml);
+              } else {
+                // image, image_file, and other block types
+                const html = renderContentBlocks([block]);
+                if (html) {
+                  const displayRole = msg.role === 'user' && block.type === 'tool_result' ? 'tool' : msg.role;
+                  addMessage(displayRole === 'user' ? 'user' : 'assistant', html);
+                }
               }
             });
+          } else if (typeof content === 'string') {
+            addMessage(msg.role, escapeHtml(content));
           }
-          addMessage(msg.role, escapeHtml(textContent));
         } catch {
           addMessage(msg.role, escapeHtml(msg.content));
         }
